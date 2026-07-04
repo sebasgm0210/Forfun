@@ -3187,7 +3187,7 @@ export function RecepcionCheckinPage() {
   }, [activeTab, loadCheckoutSnapshots]);
 
   useEffect(() => {
-    if (!invoiceForm) return;
+    if (!invoiceForm || invoiceForm.useCustomerTaxInfo) return;
     const taxId = normalizeNitForLookup(invoiceForm.taxId);
     if (!taxId || taxId === "CF") {
       if (invoiceForm.name !== "CONSUMIDOR FINAL") {
@@ -3207,7 +3207,7 @@ export function RecepcionCheckinPage() {
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [invoiceForm?.taxId]);
+  }, [invoiceForm?.taxId, invoiceForm?.useCustomerTaxInfo]);
 
 
   const checkoutSnapshotByReservationId = useMemo(
@@ -4236,7 +4236,9 @@ export function RecepcionCheckinPage() {
       setInvoiceRemaining(invoiceRemainingSummary(remainingResult.value));
     } else {
       setInvoiceRemaining(null);
-      console.warn("No se pudo consultar el bolson de facturas.", remainingResult.reason);
+      toast.error("No se pudo consultar el bolson de facturas.", {
+        description: getApiErrorMessage(remainingResult.reason),
+      });
     }
 
     setInvoiceLoading(false);

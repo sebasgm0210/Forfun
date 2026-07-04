@@ -5238,7 +5238,9 @@ export function RecepcionReservacionesPage() {
       setInvoiceRemaining(invoiceRemainingSummary(remainingResult.value));
     } else {
       setInvoiceRemaining(null);
-      console.warn("No se pudo consultar el saldo de documentos fiscales.", remainingResult.reason);
+      toast.error("No se pudo consultar el saldo de documentos fiscales.", {
+        description: getApiErrorMessage(remainingResult.reason),
+      });
     }
 
     setInvoiceLoading(false);
@@ -5431,7 +5433,7 @@ export function RecepcionReservacionesPage() {
   }
 
   useEffect(() => {
-    if (!invoiceForm) return;
+    if (!invoiceForm || invoiceForm.useCustomerTaxInfo) return;
     const taxId = normalizeNitForLookup(invoiceForm.taxId);
 
     if (!taxId || taxId === "CF") {
@@ -5453,7 +5455,7 @@ export function RecepcionReservacionesPage() {
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [invoiceForm?.taxId]);
+  }, [invoiceForm?.taxId, invoiceForm?.useCustomerTaxInfo]);
 
   async function lookupInvoiceNitInfo(
     options: { silent?: boolean; taxIdOverride?: string } = {},
