@@ -1,0 +1,425 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@500;600;700&display=swap');
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-inter: "Inter";
+  --font-playfair: "Playfair Display";
+  --font-geist-mono: "SFMono-Regular";
+  /* Casa Luna - Paleta colonial cálida */
+  --background: oklch(0.985 0.008 75); /* ivory/crema */
+  --foreground: oklch(0.235 0.025 45); /* café carbón */
+
+  --card: oklch(0.995 0.005 80); /* blanco cálido */
+  --card-foreground: oklch(0.235 0.025 45);
+
+  --popover: oklch(0.995 0.005 80);
+  --popover-foreground: oklch(0.235 0.025 45);
+
+  /* Naranja colonial / terracota como primario */
+  --primary: oklch(0.62 0.14 45);
+  --primary-foreground: oklch(0.985 0.008 75);
+
+  --secondary: oklch(0.94 0.018 75); /* beige claro */
+  --secondary-foreground: oklch(0.305 0.03 45);
+
+  --muted: oklch(0.945 0.012 75);
+  --muted-foreground: oklch(0.5 0.022 50);
+
+  /* Dorado suave como acento */
+  --accent: oklch(0.92 0.05 80);
+  --accent-foreground: oklch(0.305 0.04 45);
+
+  --destructive: oklch(0.585 0.18 25);
+  --destructive-foreground: oklch(0.985 0.008 75);
+
+  --border: oklch(0.9 0.012 70);
+  --input: oklch(0.92 0.012 70);
+  --ring: oklch(0.62 0.14 45);
+
+  /* Charts: terracota, dorado, café, verde salvia, azul colonial */
+  --chart-1: oklch(0.62 0.14 45);
+  --chart-2: oklch(0.78 0.1 80);
+  --chart-3: oklch(0.45 0.06 50);
+  --chart-4: oklch(0.62 0.08 145);
+  --chart-5: oklch(0.5 0.08 240);
+
+  --radius: 0.625rem;
+
+  /* Sidebar oscuro elegante (azul profundo del logo + acentos cálidos) */
+  --sidebar: oklch(0.255 0.04 240); /* azul profundo del logo */
+  --sidebar-foreground: oklch(0.92 0.015 75);
+  --sidebar-primary: oklch(0.7 0.14 55); /* terracota dorado */
+  --sidebar-primary-foreground: oklch(0.985 0.008 75);
+  --sidebar-accent: oklch(0.32 0.04 240);
+  --sidebar-accent-foreground: oklch(0.985 0.008 75);
+  --sidebar-border: oklch(0.32 0.04 240);
+  --sidebar-ring: oklch(0.7 0.14 55);
+
+  /* Estados hoteleros */
+  --status-available: oklch(0.62 0.12 145);
+  --status-occupied: oklch(0.55 0.14 240);
+  --status-dirty: oklch(0.62 0.18 28);
+  --status-cleaning: oklch(0.7 0.14 80);
+  --status-maintenance: oklch(0.65 0.13 60);
+  --status-pending: oklch(0.7 0.15 75);
+}
+
+.dark {
+  --background: oklch(0.18 0.02 45);
+  --foreground: oklch(0.95 0.01 75);
+  --card: oklch(0.22 0.025 45);
+  --card-foreground: oklch(0.95 0.01 75);
+  --popover: oklch(0.22 0.025 45);
+  --popover-foreground: oklch(0.95 0.01 75);
+  --primary: oklch(0.7 0.14 55);
+  --primary-foreground: oklch(0.18 0.02 45);
+  --secondary: oklch(0.28 0.03 45);
+  --secondary-foreground: oklch(0.95 0.01 75);
+  --muted: oklch(0.28 0.03 45);
+  --muted-foreground: oklch(0.7 0.015 75);
+  --accent: oklch(0.32 0.04 50);
+  --accent-foreground: oklch(0.95 0.01 75);
+  --destructive: oklch(0.55 0.16 25);
+  --destructive-foreground: oklch(0.95 0.01 75);
+  --border: oklch(0.32 0.025 45);
+  --input: oklch(0.32 0.025 45);
+  --ring: oklch(0.7 0.14 55);
+  --sidebar: oklch(0.18 0.03 240);
+  --sidebar-foreground: oklch(0.92 0.015 75);
+  --sidebar-primary: oklch(0.7 0.14 55);
+  --sidebar-primary-foreground: oklch(0.985 0.008 75);
+  --sidebar-accent: oklch(0.25 0.04 240);
+  --sidebar-accent-foreground: oklch(0.985 0.008 75);
+  --sidebar-border: oklch(0.25 0.04 240);
+  --sidebar-ring: oklch(0.7 0.14 55);
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), 'system-ui', sans-serif;
+  --font-serif: var(--font-playfair), 'Georgia', serif;
+  --font-mono: var(--font-geist-mono), monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-status-available: var(--status-available);
+  --color-status-occupied: var(--status-occupied);
+  --color-status-dirty: var(--status-dirty);
+  --color-status-cleaning: var(--status-cleaning);
+  --color-status-maintenance: var(--status-maintenance);
+  --color-status-pending: var(--status-pending);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    min-width: 0;
+    width: 100%;
+    min-height: 100%;
+    overflow-x: hidden;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: 'ss01', 'cv11';
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-serif);
+    letter-spacing: -0.01em;
+  }
+  img,
+  video,
+  canvas,
+  svg {
+    max-width: 100%;
+  }
+  main,
+  section,
+  article,
+  [data-view-export-root],
+  [data-slot="card"],
+  [data-slot="card-header"],
+  [data-slot="card-content"],
+  [data-slot="tabs"],
+  [data-slot="tabs-content"] {
+    min-width: 0;
+  }
+}
+
+/* Patrón decorativo sutil tipo colonial */
+@layer utilities {
+  .touch-scroll {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-inline: contain;
+  }
+
+  .mobile-safe-text {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
+@media (max-width: 640px) {
+  [data-slot="card"] {
+    border-radius: 1rem;
+  }
+
+  [data-slot="card-header"],
+  [data-slot="card-content"],
+  [data-slot="card-footer"] {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  [data-slot="tabs-list"] {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    border-radius: 0.875rem;
+  }
+
+  [data-slot="tabs-trigger"] {
+    min-height: 2rem;
+  }
+
+  [class~="rounded-3xl"][class~="border"] {
+    border-radius: 1rem;
+  }
+
+  [class~="rounded-3xl"][class~="p-5"] {
+    padding: 1rem;
+  }
+
+  [class~="rounded-3xl"][class~="p-4"] {
+    padding: 0.875rem;
+  }
+
+  [class~="rounded-3xl"][class~="p-10"] {
+    padding: 1.5rem;
+  }
+
+  .recharts-wrapper,
+  .recharts-surface {
+    max-width: 100% !important;
+  }
+}
+
+.pattern-colonial {
+  background-image:
+    radial-gradient(circle at 1px 1px, oklch(0.85 0.02 75 / 0.4) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+@keyframes frequent-hop {
+  0% {
+    opacity: 0;
+    transform: translate(38px, 18px) scale(0.75);
+  }
+  35% {
+    opacity: 1;
+    transform: translate(-10px, -18px) scale(1.08);
+  }
+  70% {
+    opacity: 1;
+    transform: translate(-42px, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-54px, 2px) scale(0.96);
+  }
+}
+
+@keyframes frequent-trash {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  45% {
+    opacity: 1;
+    transform: translate(32px, -10px) rotate(7deg) scale(0.95);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(92px, 42px) rotate(18deg) scale(0.55);
+  }
+}
+
+.animate-frequent-hop {
+  animation: frequent-hop 780ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.animate-frequent-trash {
+  animation: frequent-trash 760ms cubic-bezier(0.35, 0, 0.25, 1) both;
+}
+
+@keyframes card-action-success {
+  0% {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  12% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  72% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.01);
+  }
+}
+
+.animate-card-action-success {
+  animation: card-action-success 2200ms ease both;
+}
+
+/* Scrollbar elegante */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(0.85 0.015 75);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.75 0.02 75);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+
+  html,
+  body {
+    background: white !important;
+    color: black !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body {
+    font-size: 11px;
+  }
+
+  nav,
+  aside,
+  button,
+  [role="tablist"],
+  .no-print {
+    display: none !important;
+  }
+
+  main,
+  section,
+  article,
+  div {
+    max-width: 100% !important;
+  }
+
+  section,
+  article,
+  table,
+  thead,
+  tbody,
+  tr,
+  td,
+  th {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tfoot {
+    display: table-footer-group;
+  }
+
+  tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .rounded-3xl,
+  .rounded-2xl {
+    border-radius: 12px !important;
+  }
+
+  .shadow-sm,
+  .shadow-2xl {
+    box-shadow: none !important;
+  }
+
+  .overflow-x-auto {
+    overflow: visible !important;
+  }
+
+  .min-w-\[980px\],
+  .min-w-\[900px\] {
+    min-width: 0 !important;
+  }
+}
