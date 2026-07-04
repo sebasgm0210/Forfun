@@ -1034,14 +1034,20 @@ function cashInvoicePreferenceFor(
   return preferences[felDispatchKey(stayId, stage)] ?? "con-factura";
 }
 
+function paymentHasFelInvoice(payment: PaymentRecord) {
+  return backendPaymentInvoicedAmount(payment) > 0.01;
+}
+
+function stayHasFelInvoicedPayment(stay: Stay) {
+  return paymentsForInvoiceAction(stay, "check-in").some(paymentHasFelInvoice);
+}
+
 function stayCanSkipInguatReview(
   stay: Stay,
   preferences: Record<string, CashInvoicePreference>,
 ) {
-  return (
-    canChooseCashInvoicePreference(stay, "check-in") &&
-    cashInvoicePreferenceFor(stay.id, "check-in", preferences) === "sin-factura"
-  );
+  void preferences;
+  return !stayHasFelInvoicedPayment(stay);
 }
 
 function checkInInguatHandled(
@@ -1064,15 +1070,9 @@ function groupCanSkipInguatReview(
   payments: PaymentRecord[],
   preferences: Record<string, CashInvoicePreference>,
 ) {
-  const checkInPayments = payments.filter(
-    (payment) => payment.stage === "check-in" && Number(payment.amount || 0) > 0,
-  );
-
-  return (
-    checkInPayments.length > 0 &&
-    checkInPayments.every((payment) => payment.method === "efectivo") &&
-    cashInvoicePreferenceFor(groupKey, "check-in", preferences) === "sin-factura"
-  );
+  void groupKey;
+  void preferences;
+  return !payments.some(paymentHasFelInvoice);
 }
 
 function groupReadyForCheckIn(
@@ -1083,6 +1083,7 @@ function groupReadyForCheckIn(
 ) {
   const inguatHandled =
     stays.every((stay) => stay.checklist.inguat) ||
+    stays.every((stay) => stayCanSkipInguatReview(stay, preferences)) ||
     groupCanSkipInguatReview(groupKey, payments, preferences);
   const paymentHandled =
     groupPaymentBalance(stays, payments) <= 0 ||
@@ -1614,6 +1615,7 @@ function StayCard({
   accountManagedByGroup?: boolean;
   allowCollapse?: boolean;
 }) {
+  void cashInvoicePreference;
   const balance = stayBalance(stay);
   const isPaidInFull = stayIsPaidInFull(stay);
   const operationalNotes = accountManagedByGroup ? [] : stayOperationalNotes(stay);
@@ -1627,16 +1629,9 @@ function StayCard({
   const showPaymentBreakdown =
     mode === "checkin" || balance > 0.01 || stay.payments.length > 0;
   const inguatCanBeSkipped =
-    mode === "checkin" &&
-    canChooseCashInvoicePreference(stay, "check-in") &&
-    cashInvoicePreference === "sin-factura";
+    mode === "checkin" && stayCanSkipInguatReview(stay, {});
 
-  const checkInReady = stayReadyForCheckIn(
-    stay,
-    inguatCanBeSkipped
-      ? { [felDispatchKey(stay.id, "check-in")]: "sin-factura" }
-      : {},
-  );
+  const checkInReady = stayReadyForCheckIn(stay, {});
   const checkOutReady = stayReadyForCheckOut(stay);
 
   if (!expanded) {
@@ -1834,16 +1829,12 @@ function StayCard({
           {accountManagedByGroup ? null : (
             <>
           <CheckItem
-            checked={stay.checklist.inguat || inguatCanBeSkipped}
-            title={
-              inguatCanBeSkipped && !stay.checklist.inguat
-                ? "Libro INGUAT no requerido"
-                : "Libro INGUAT revisado"
-            }
+            checked={stay.checklist.inguat}
+            title="Libro INGUAT revisado"
             description={
-              inguatCanBeSkipped && !stay.checklist.inguat
-                ? "Pago en efectivo marcado sin factura. Para este caso puntual, el check-in puede completarse sin revisar INGUAT."
-                : "Confirmar que los datos del huésped están listos para el registro."
+              inguatCanBeSkipped
+                ? "No hay pagos facturados FEL para esta llegada. INGUAT no es necesario para completar el check-in; márcalo solo si recepción lo revisó."
+                : "Hay pagos facturados FEL para esta llegada. Por eso, revisar y marcar Libro INGUAT es obligatorio para completar el check-in."
             }
             icon={FileText}
             onClick={() => onToggle("inguat")}
@@ -2179,18 +2170,9 @@ function GuestStayGroup({
   const groupPaymentsSaving = stays.some((stay) =>
     savingCheckInPaymentIds.has(stay.id),
   );
-  const groupCanChooseInvoice =
-    groupInvoicePayments.length > 0 &&
-    groupInvoicePayments.every((payment) => payment.method === "efectivo");
-  const groupInvoicePreference = cashInvoicePreferenceFor(
-    groupKey,
-    groupStage,
-    cashInvoicePreferences,
-  );
   const groupInguatCanBeSkipped =
     mode === "checkin" &&
-    groupCanChooseInvoice &&
-    groupInvoicePreference === "sin-factura";
+    stays.every((stay) => stayCanSkipInguatReview(stay, cashInvoicePreferences));
   const allReady = isGroup
     ? mode === "checkin"
       ? groupReadyForCheckIn(
@@ -2509,16 +2491,12 @@ function GuestStayGroup({
                 {mode === "checkin" ? (
                   <div className="mt-5 grid gap-3 lg:grid-cols-2">
                     <CheckItem
-                      checked={groupChecklistChecked("inguat") || groupInguatCanBeSkipped}
-                      title={
-                        groupInguatCanBeSkipped && !groupChecklistChecked("inguat")
-                          ? "Libro INGUAT no requerido"
-                          : "Libro INGUAT revisado"
-                      }
+                      checked={groupChecklistChecked("inguat")}
+                      title="Libro INGUAT revisado"
                       description={
-                        groupInguatCanBeSkipped && !groupChecklistChecked("inguat")
-                          ? "Pago grupal en efectivo marcado sin factura. Para este caso puntual, el check-in conjunto puede completarse sin revisar INGUAT."
-                          : "Confirmar una sola vez los datos de llegada del cliente para todas sus habitaciones."
+                        groupInguatCanBeSkipped
+                          ? "No hay pagos facturados FEL para estas llegadas. INGUAT no es necesario para completar el check-in conjunto; márcalo solo si recepción lo revisó."
+                          : "Hay pagos facturados FEL para estas llegadas. Por eso, revisar y marcar Libro INGUAT es obligatorio para completar el check-in conjunto."
                       }
                       icon={FileText}
                       onClick={() => toggleGroupChecklist("inguat")}
@@ -3187,7 +3165,7 @@ export function RecepcionCheckinPage() {
   }, [activeTab, loadCheckoutSnapshots]);
 
   useEffect(() => {
-    if (!invoiceForm) return;
+    if (!invoiceForm || invoiceForm.useCustomerTaxInfo) return;
     const taxId = normalizeNitForLookup(invoiceForm.taxId);
     if (!taxId || taxId === "CF") {
       if (invoiceForm.name !== "CONSUMIDOR FINAL") {
@@ -3207,7 +3185,7 @@ export function RecepcionCheckinPage() {
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [invoiceForm?.taxId]);
+  }, [invoiceForm?.taxId, invoiceForm?.useCustomerTaxInfo]);
 
 
   const checkoutSnapshotByReservationId = useMemo(
@@ -4236,7 +4214,9 @@ export function RecepcionCheckinPage() {
       setInvoiceRemaining(invoiceRemainingSummary(remainingResult.value));
     } else {
       setInvoiceRemaining(null);
-      console.warn("No se pudo consultar el bolson de facturas.", remainingResult.reason);
+      toast.error("No se pudo consultar el bolson de facturas.", {
+        description: getApiErrorMessage(remainingResult.reason),
+      });
     }
 
     setInvoiceLoading(false);

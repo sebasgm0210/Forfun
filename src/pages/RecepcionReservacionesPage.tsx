@@ -3472,40 +3472,61 @@ function ReservationCard({
       ) : null}
 
       {canManageAbonos ? (
-        <PaymentBreakdownCard
-          title={
-            reservation.status === "Ocupada"
-              ? "Pagos de la reserva y estadía"
-              : "Pagos de la reserva"
-          }
-          description={
-            reservation.status === "Ocupada"
-              ? "Puedes registrar pagos adicionales mientras la habitación esté ocupada."
-              : "Agrega pagos antes de enviar la reserva a check-in. Luego podrás facturarlos desde esta misma reserva."
-          }
-          total={reservation.total}
-          payments={reservation.payments}
-          onChange={onAbonosChange}
-          isPaymentReadOnly={(payment) => paymentBackendId(payment) !== null}
-          isPaymentRemovable={(payment) =>
-            paymentBackendId(payment) === null ||
-            reservationPaymentInvoicedAmount(payment) <= 0.01
-          }
-          stage="reserva"
-          allowCredit={
-            Boolean(creditInfo) ||
-            reservation.payments.some((payment) => payment.method === "credito")
-          }
-          creditInfo={creditInfo}
-          addLabel="Agregar pago"
-          paidLabel="Pagos registrados"
-          emptyLabel="Sin pagos registrados todavía."
-          referencePlaceholder="Noche 1, boleta, voucher..."
-          onPrintPayment={onPrintPaymentReceipt}
-          showInvoiceStatus
-          headerLayout="inline"
-          className="mt-4"
-        />
+        <>
+          <PaymentBreakdownCard
+            title={
+              reservation.status === "Ocupada"
+                ? "Pagos de la reserva y estadía"
+                : "Pagos de la reserva"
+            }
+            description={
+              reservation.status === "Ocupada"
+                ? "Puedes registrar pagos adicionales mientras la habitación esté ocupada."
+                : "Agrega pagos antes de enviar la reserva a check-in. Luego podrás facturarlos desde esta misma reserva."
+            }
+            total={reservation.total}
+            payments={reservation.payments}
+            onChange={onAbonosChange}
+            isPaymentReadOnly={(payment) => paymentBackendId(payment) !== null}
+            isPaymentRemovable={(payment) =>
+              paymentBackendId(payment) === null ||
+              reservationPaymentInvoicedAmount(payment) <= 0.01
+            }
+            stage="reserva"
+            allowCredit={
+              Boolean(creditInfo) ||
+              reservation.payments.some((payment) => payment.method === "credito")
+            }
+            creditInfo={creditInfo}
+            addLabel="Agregar pago"
+            paidLabel="Pagos registrados"
+            emptyLabel="Sin pagos registrados todavía."
+            referencePlaceholder="Noche 1, boleta, voucher..."
+            onPrintPayment={onPrintPaymentReceipt}
+            showInvoiceStatus
+            headerLayout="inline"
+            className="mt-4"
+          />
+
+          {hasUnsavedPaymentChanges ? (
+            <div className="mt-3 flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50/80 p-3 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold">Pagos pendientes de guardar</p>
+                <p className="text-xs text-amber-900/80">
+                  Los cambios no se enviarán al backend hasta presionar Guardar pagos.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                className="shrink-0 rounded-full"
+                onClick={onSavePayments}
+              >
+                Guardar pagos
+              </Button>
+            </div>
+          ) : null}
+        </>
       ) : (
         <div className="mt-4 rounded-2xl border bg-muted/20 p-4 text-sm text-muted-foreground">
           {checkoutCompleted
@@ -3814,9 +3835,9 @@ export function RecepcionReservacionesPage() {
       );
 
       return incomingReservations.map((incoming) => {
-        if (incoming.status !== "Ocupada") return incoming;
-        if (!dirtyReservationPaymentIdsRef.current.has(incoming.id))
+        if (!dirtyReservationPaymentIdsRef.current.has(incoming.id)) {
           return incoming;
+        }
 
         const draft = currentById.get(incoming.id);
         if (!draft) return incoming;
@@ -5155,35 +5176,8 @@ export function RecepcionReservacionesPage() {
     }
   }
 
-  useEffect(() => {
-    if (dirtyReservationPaymentIds.size === 0) return;
-
-    const ids = Array.from(dirtyReservationPaymentIds).filter((id) => {
-      const reservation = reservations.find((item) => item.id === id);
-      if (!reservation) return false;
-
-      const hasDeletedSavedPayments =
-        (deletedReservationPaymentIdsRef.current[id]?.length ?? 0) > 0;
-      const hasNewPaymentsWithAmount = reservation.payments.some(
-        (payment) =>
-          payment.stage === "reserva" &&
-          Number(payment.amount || 0) > 0 &&
-          paymentBackendId(payment) === null,
-      );
-
-      return hasDeletedSavedPayments || hasNewPaymentsWithAmount;
-    });
-
-    if (ids.length === 0) return;
-
-    const timer = window.setTimeout(() => {
-      ids.forEach((id) => {
-        void saveReservationPayments(id, { silent: true });
-      });
-    }, 1200);
-
-    return () => window.clearTimeout(timer);
-  }, [dirtyReservationPaymentIds, reservations]);
+  // En Reservaciones los pagos se guardan manualmente con el botón "Guardar pagos".
+  // No usar autosave aquí: al escribir montos como 300, un debounce podía guardar solo "3".
 
   async function loadInvoiceSupportData(reservation: Reservation) {
     setInvoiceLoading(true);
@@ -5315,11 +5309,11 @@ export function RecepcionReservacionesPage() {
     let targetReservation = reservation;
 
     if (dirtyReservationPaymentIdsRef.current.has(reservation.id)) {
-      const savedReservation = await saveReservationPayments(reservation.id, {
-        silent: true,
+      toast.warning("Guarda los pagos antes de facturar.", {
+        description:
+          "Hay cambios pendientes en los pagos de esta reserva. Presiona Guardar pagos y luego vuelve a facturar.",
       });
-      if (!savedReservation) return;
-      targetReservation = savedReservation;
+      return;
     }
 
     const reservationId = numericBackendId(targetReservation.id);
@@ -7319,6 +7313,12 @@ export function RecepcionReservacionesPage() {
                     onAbonosChange={(payments) =>
                       updateReservationPayments(reservation.id, payments)
                     }
+                    hasUnsavedPaymentChanges={dirtyReservationPaymentIds.has(
+                      reservation.id,
+                    )}
+                    onSavePayments={() => {
+                      void saveReservationPayments(reservation.id);
+                    }}
                   />
                 ))
               )}
