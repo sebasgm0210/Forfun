@@ -92,24 +92,6 @@ import type {
 } from "@/lib/types";
 
 type ReservationSource = "Llamada" | "WhatsApp" | "Correo" | "Presencial";
-
-const CHECKOUT_READY_STORAGE_KEY = "casa-luna-checkout-ready-reservations";
-
-function readCheckoutReadyReservationIds() {
-  if (typeof window === "undefined") return new Set<string>();
-
-  try {
-    const raw = window.localStorage.getItem(CHECKOUT_READY_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return new Set<string>(
-      Array.isArray(parsed)
-        ? parsed.filter((item): item is string => typeof item === "string")
-        : [],
-    );
-  } catch {
-    return new Set<string>();
-  }
-}
 type ReservationStatus =
   | "Pre-reserva"
   | "Confirmada"
@@ -1936,15 +1918,9 @@ function SelectInput(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
 function plannerReservationStyle(
   reservation: Reservation,
   room: RoomAvailability,
-  checkoutReadyReservationIds: Set<string>,
 ) {
   const isCurrentStay =
     room.status === "Ocupada" && dateInReservation(reservation, todayIso());
-  const isReadyForCheckout = checkoutReadyReservationIds.has(reservation.id);
-
-  if (isReadyForCheckout) {
-    return "border-blue-500/30 bg-blue-600 text-white shadow-blue-900/20";
-  }
 
   if (reservation.status === "Checkout") {
     return "border-blue-500/30 bg-blue-600 text-white shadow-blue-900/20";
@@ -1971,9 +1947,7 @@ function plannerReservationStyle(
 function plannerReservationLabel(
   reservation: Reservation,
   room: RoomAvailability,
-  checkoutReadyReservationIds: Set<string>,
 ) {
-  if (checkoutReadyReservationIds.has(reservation.id)) return "Lista para check-out";
   if (reservation.status === "Checkout") return "Checkout realizado";
   if (room.status === "Ocupada" && dateInReservation(reservation, todayIso())) {
     return "Ocupada";
@@ -1988,11 +1962,9 @@ function plannerReservationLabel(
 function PlannerReservationDetails({
   reservation,
   room,
-  checkoutReadyReservationIds,
 }: {
   reservation: Reservation;
   room: RoomAvailability;
-  checkoutReadyReservationIds: Set<string>;
 }) {
   const balance = Math.max(0, reservation.total - reservation.paid);
 
@@ -2009,7 +1981,7 @@ function PlannerReservationDetails({
             </p>
           </div>
           <span className="shrink-0 rounded-full border bg-muted/40 px-2.5 py-1 text-[11px] font-semibold">
-            {plannerReservationLabel(reservation, room, checkoutReadyReservationIds)}
+            {plannerReservationLabel(reservation, room)}
           </span>
         </div>
       </div>
@@ -2144,11 +2116,9 @@ function PlannerBoard({
   onClearSelection,
   onReservationOpen,
   onReservationExtend,
-  checkoutReadyReservationIds,
 }: {
   rooms: RoomAvailability[];
   reservations: Reservation[];
-  checkoutReadyReservationIds: Set<string>;
   cleaningBlocks: CleaningBlock[];
   dates: string[];
   selectedCells: string[];
@@ -2641,7 +2611,7 @@ function PlannerBoard({
             Rojo: ocupada
           </span>
           <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-blue-800">
-            Azul: lista para check-out
+            Azul: checkout/lista
           </span>
           <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-800">
             Morado: limpieza
@@ -3048,11 +3018,7 @@ function PlannerBoard({
                                 onClick={() => onReservationOpen(reservation)}
                                 className={cn(
                                   "absolute top-9 z-10 flex h-9 items-center gap-2 overflow-hidden rounded-full border px-2 text-left text-xs font-semibold shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl sm:px-3",
-                                  plannerReservationStyle(
-                                    reservation,
-                                    room,
-                                    checkoutReadyReservationIds,
-                                  ),
+                                  plannerReservationStyle(reservation, room),
                                   extensionDragging &&
                                     "pointer-events-none transition-none duration-0",
                                   draftForReservation &&
@@ -3087,7 +3053,6 @@ function PlannerBoard({
                               <PlannerReservationDetails
                                 reservation={reservation}
                                 room={room}
-                                checkoutReadyReservationIds={checkoutReadyReservationIds}
                               />
                             </HoverCardContent>
                           </HoverCard>
@@ -3393,8 +3358,6 @@ function ReservationCard({
   onPrintPaymentReceipt,
   onIssueInvoice,
   onAbonosChange,
-  hasUnsavedPaymentChanges = false,
-  onSavePayments,
 }: {
   reservation: Reservation;
   credit?: GuestCreditInfo;
@@ -3406,8 +3369,6 @@ function ReservationCard({
   onPrintPaymentReceipt: (payment: PaymentRecord) => void;
   onIssueInvoice: () => void;
   onAbonosChange: (payments: PaymentRecord[]) => void;
-  hasUnsavedPaymentChanges?: boolean;
-  onSavePayments?: () => void;
 }) {
   const balance = reservation.total - reservation.paid;
   const invoiceAmounts = reservationInvoiceDisplayAmounts(reservation);
@@ -3672,7 +3633,7 @@ function ReservationCard({
             className="group/action gap-2 rounded-full border-blue-200 text-blue-800 hover:bg-blue-50 hover:shadow-sm"
           >
             <Link
-              to={`/recepcion/check-in?tab=checkin&reservation=${encodeURIComponent(
+              to={`/recepcion/check-in?reservation=${encodeURIComponent(
                 reservation.id,
               )}`}
             >
@@ -3689,12 +3650,12 @@ function ReservationCard({
             className="group/action gap-2 rounded-full shadow-sm hover:shadow-md"
           >
             <Link
-              to={`/recepcion/check-in?tab=pagos-estadia&reservation=${encodeURIComponent(
+              to={`/recepcion/check-in?tab=checkout&reservation=${encodeURIComponent(
                 reservation.id,
               )}`}
             >
-              <Hotel className="size-4 transition-transform group-hover/action:-translate-y-0.5" />
-              Ver estancia actual
+              <LogOut className="size-4 transition-transform group-hover/action:translate-x-0.5" />
+              Iniciar check-out
             </Link>
           </Button>
         ) : null}
@@ -3751,7 +3712,6 @@ export function RecepcionReservacionesPage() {
     rooms: hotelRooms,
     reservations: clientStayHistory,
   } = useStore();
-
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [dirtyReservationPaymentIds, setDirtyReservationPaymentIds] = useState<
     Set<string>
@@ -3764,23 +3724,6 @@ export function RecepcionReservacionesPage() {
   const [reservationDateFrom, setReservationDateFrom] = useState("");
   const [reservationDateTo, setReservationDateTo] = useState("");
   const [activeTab, setActiveTab] = useState("mapa");
-  const [checkoutReadyReservationIds, setCheckoutReadyReservationIds] =
-    useState<Set<string>>(() => readCheckoutReadyReservationIds());
-
-  useEffect(() => {
-    const refreshCheckoutReady = () => {
-      setCheckoutReadyReservationIds(readCheckoutReadyReservationIds());
-    };
-
-    refreshCheckoutReady();
-    window.addEventListener("storage", refreshCheckoutReady);
-    window.addEventListener("casa-luna-checkout-ready-change", refreshCheckoutReady);
-
-    return () => {
-      window.removeEventListener("storage", refreshCheckoutReady);
-      window.removeEventListener("casa-luna-checkout-ready-change", refreshCheckoutReady);
-    };
-  }, []);
   const [plannerStart, setPlannerStart] = useState(() => todayIso());
   const [plannerDays, setPlannerDays] = useState(30);
   const [selectedPlannerCells, setSelectedPlannerCells] = useState<string[]>(
@@ -6604,7 +6547,6 @@ export function RecepcionReservacionesPage() {
             <PlannerBoard
               rooms={rooms}
               reservations={reservations}
-              checkoutReadyReservationIds={checkoutReadyReservationIds}
               cleaningBlocks={cleaningBlocks}
               dates={plannerDates}
               selectedCells={selectedPlannerCells}

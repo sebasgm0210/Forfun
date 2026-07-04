@@ -66,34 +66,6 @@ import { formatDate, useStore } from "@/lib/store";
 import type { Advance, CreditAccount, Guest, PaymentRecord, Reservation } from "@/lib/types";
 
 type StayStatus = "Lista para check-in" | "En habitación" | "Check-out finalizado";
-
-const CHECKOUT_READY_STORAGE_KEY = "casa-luna-checkout-ready-reservations";
-
-function readCheckoutReadyReservationIds() {
-  if (typeof window === "undefined") return new Set<string>();
-
-  try {
-    const raw = window.localStorage.getItem(CHECKOUT_READY_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return new Set<string>(
-      Array.isArray(parsed)
-        ? parsed.filter((item): item is string => typeof item === "string")
-        : [],
-    );
-  } catch {
-    return new Set<string>();
-  }
-}
-
-function writeCheckoutReadyReservationIds(ids: Set<string>) {
-  if (typeof window === "undefined") return;
-
-  const values = Array.from(ids);
-  window.localStorage.setItem(CHECKOUT_READY_STORAGE_KEY, JSON.stringify(values));
-  window.dispatchEvent(
-    new CustomEvent("casa-luna-checkout-ready-change", { detail: values }),
-  );
-}
 type RoomStatus = "Disponible" | "Reservada" | "Lista para check-in" | "Ocupada" | "Limpieza";
 
 type ChecklistKey =
@@ -1857,12 +1829,16 @@ function StayCard({
           {accountManagedByGroup ? null : (
             <>
           <CheckItem
-            checked={stay.checklist.inguat}
-            title="Libro INGUAT revisado"
+            checked={stay.checklist.inguat || inguatCanBeSkipped}
+            title={
+              inguatCanBeSkipped && !stay.checklist.inguat
+                ? "Libro INGUAT no requerido"
+                : "Libro INGUAT revisado"
+            }
             description={
-              inguatCanBeSkipped
-                ? "No hay pagos facturados FEL para esta llegada. INGUAT no es necesario para completar el check-in; márcalo solo si recepción lo revisó."
-                : "Hay pagos facturados FEL para esta llegada. Por eso, revisar y marcar Libro INGUAT es obligatorio para completar el check-in."
+              inguatCanBeSkipped && !stay.checklist.inguat
+                ? "No hay pagos facturados FEL para esta llegada. Para este caso, el check-in puede completarse sin revisar INGUAT."
+                : "Confirmar que los datos del huésped están listos para el registro."
             }
             icon={FileText}
             onClick={() => onToggle("inguat")}
@@ -2519,12 +2495,16 @@ function GuestStayGroup({
                 {mode === "checkin" ? (
                   <div className="mt-5 grid gap-3 lg:grid-cols-2">
                     <CheckItem
-                      checked={groupChecklistChecked("inguat")}
-                      title="Libro INGUAT revisado"
+                      checked={groupChecklistChecked("inguat") || groupInguatCanBeSkipped}
+                      title={
+                        groupInguatCanBeSkipped && !groupChecklistChecked("inguat")
+                          ? "Libro INGUAT no requerido"
+                          : "Libro INGUAT revisado"
+                      }
                       description={
-                        groupInguatCanBeSkipped
-                          ? "No hay pagos facturados FEL para estas llegadas. INGUAT no es necesario para completar el check-in conjunto; márcalo solo si recepción lo revisó."
-                          : "Hay pagos facturados FEL para estas llegadas. Por eso, revisar y marcar Libro INGUAT es obligatorio para completar el check-in conjunto."
+                        groupInguatCanBeSkipped && !groupChecklistChecked("inguat")
+                          ? "No hay pagos facturados FEL para estas llegadas. El check-in conjunto puede completarse sin revisar INGUAT."
+                          : "Confirmar una sola vez los datos de llegada del cliente para todas sus habitaciones."
                       }
                       icon={FileText}
                       onClick={() => toggleGroupChecklist("inguat")}
@@ -3082,18 +3062,8 @@ function paymentsWithFallbackForGroupBalance(
 
 export function RecepcionCheckinPage() {
   const [searchParams] = useSearchParams();
-  const requestedReservation = searchParams.get("reservation");
-  const requestedTabParam = searchParams.get("tab");
-  const requestedTab =
-    requestedTabParam === "checkout" ||
-    requestedTabParam === "pagos-estadia" ||
-    requestedTabParam === "checkin"
-      ? requestedTabParam
-      : requestedReservation
-        ? "checkin"
-        : null;
-  const checkinFocusHandledRef = useRef<string | null>(null);
-  const checkoutFocusHandledRef = useRef<string | null>(null);
+  const requestedCheckoutReservation = searchParams.get("reservation");
+  const checkoutFocusHandled = useRef(false);
   const {
     reservations,
     advances,
@@ -3135,14 +3105,8 @@ export function RecepcionCheckinPage() {
   const [invoiceLoading, setInvoiceLoading] = useState(false);
   const [invoiceSubmitting, setInvoiceSubmitting] = useState(false);
   const [issuedInvoiceResponse, setIssuedInvoiceResponse] = useState<unknown>(null);
-  const [activeTab, setActiveTab] = useState(() => {
-    const tab = searchParams.get("tab");
-    return tab === "checkout" || tab === "pagos-estadia" || tab === "checkin"
-      ? tab
-      : "checkin";
-  });
-  const [checkoutReadyStayIds, setCheckoutReadyStayIds] = useState<Set<string>>(
-    () => readCheckoutReadyReservationIds(),
+  const [activeTab, setActiveTab] = useState(() =>
+    searchParams.get("tab") === "checkout" ? "checkout" : "checkin",
   );
   const [query, setQuery] = useState("");
   const [cancelledArrivalIds, setCancelledArrivalIds] = useState<Set<string>>(
@@ -3209,15 +3173,7 @@ export function RecepcionCheckinPage() {
   }, [activeTab, loadCheckoutSnapshots]);
 
   useEffect(() => {
-    if (!requestedTab) return;
-    setActiveTab(requestedTab);
-    if (requestedReservation) {
-      setQuery("");
-    }
-  }, [requestedReservation, requestedTab]);
-
-  useEffect(() => {
-    if (!invoiceForm) return;
+    if (!invoiceForm || invoiceForm.useCustomerTaxInfo) return;
     const taxId = normalizeNitForLookup(invoiceForm.taxId);
     if (!taxId || taxId === "CF") {
       if (invoiceForm.name !== "CONSUMIDOR FINAL") {
@@ -3237,7 +3193,7 @@ export function RecepcionCheckinPage() {
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [invoiceForm?.taxId]);
+  }, [invoiceForm?.taxId, invoiceForm?.useCustomerTaxInfo]);
 
 
   const checkoutSnapshotByReservationId = useMemo(
@@ -3468,9 +3424,6 @@ export function RecepcionCheckinPage() {
 
   const arrivals = stays.filter((stay) => stay.status === "Lista para check-in");
   const inHouse = stays.filter((stay) => stay.status === "En habitación");
-  const checkoutReadyStays = inHouse.filter((stay) =>
-    checkoutReadyStayIds.has(stay.id),
-  );
 
   const filteredArrivals = useMemo(() => {
     const text = query.toLowerCase().trim();
@@ -3496,99 +3449,32 @@ export function RecepcionCheckinPage() {
     );
   }, [inHouse, query]);
 
-  const filteredCheckoutReady = useMemo(() => {
-    const text = query.toLowerCase().trim();
-    if (!text) return checkoutReadyStays;
-
-    return checkoutReadyStays.filter((stay) =>
-      [stay.code, stay.guestName, stay.dpi, stay.phone, stay.roomNumber]
-        .join(" ")
-        .toLowerCase()
-        .includes(text),
-    );
-  }, [checkoutReadyStays, query]);
-
   const groupedArrivals = useMemo(
     () => groupStaysByGuestAndDate(filteredArrivals, "checkin"),
     [filteredArrivals],
   );
 
-  const groupedCheckoutReady = useMemo(
-    () => groupStaysByGuestAndDate(filteredCheckoutReady, "checkout"),
-    [filteredCheckoutReady],
+  const groupedInHouse = useMemo(
+    () => groupStaysByGuestAndDate(filteredInHouse, "checkout"),
+    [filteredInHouse],
   );
 
   useEffect(() => {
-    if (!requestedReservation || requestedTab !== "checkin") return;
-
-    const focusKey = `checkin|${requestedReservation}`;
-    if (checkinFocusHandledRef.current === focusKey) return;
-
-    const requestedId = numericApiId(requestedReservation);
-    const targetStay = arrivals.find(
-      (stay) =>
-        stay.id === requestedReservation ||
-        (requestedId !== null && numericApiId(stay.id) === requestedId),
-    );
-    if (!targetStay) return;
-
-    const targetGroup = groupedArrivals.find((group) =>
-      group.stays.some((stay) => stay.id === targetStay.id),
-    );
-    const groupKey = targetGroup ? `checkin|${targetGroup.id}` : null;
-
-    checkinFocusHandledRef.current = focusKey;
-    setActiveTab("checkin");
-    setQuery("");
-    setExpandedStayCards((current) => ({
-      ...current,
-      [targetStay.id]: true,
-    }));
-    if (groupKey) {
-      setExpandedGuestGroups((current) => ({
-        ...current,
-        [groupKey]: true,
-      }));
-      setExpandedGroupAccounts((current) => ({
-        ...current,
-        [groupKey]: true,
-      }));
-    }
-
-    window.setTimeout(() => {
-      document
-        .getElementById(`stay-card-${targetStay.id}`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 120);
-  }, [arrivals, groupedArrivals, requestedReservation, requestedTab]);
-
-  useEffect(() => {
-    if (!requestedReservation || requestedTab !== "checkout") return;
-
-    const focusKey = `checkout|${requestedReservation}`;
-    if (checkoutFocusHandledRef.current === focusKey) return;
-
-    const requestedId = numericApiId(requestedReservation);
+    if (!requestedCheckoutReservation || checkoutFocusHandled.current) return;
+    const requestedId = numericApiId(requestedCheckoutReservation);
     const targetStay = inHouse.find(
       (stay) =>
-        stay.id === requestedReservation ||
+        stay.id === requestedCheckoutReservation ||
         (requestedId !== null && numericApiId(stay.id) === requestedId),
     );
     if (!targetStay) return;
 
-    setCheckoutReadyStayIds((current) => {
-      const next = new Set(current);
-      next.add(targetStay.id);
-      writeCheckoutReadyReservationIds(next);
-      return next;
-    });
-
-    const targetGroup = groupedCheckoutReady.find((group) =>
+    const targetGroup = groupedInHouse.find((group) =>
       group.stays.some((stay) => stay.id === targetStay.id),
     );
     const groupKey = targetGroup ? `checkout|${targetGroup.id}` : null;
 
-    checkoutFocusHandledRef.current = focusKey;
+    checkoutFocusHandled.current = true;
     setActiveTab("checkout");
     setQuery("");
     setExpandedStayCards((current) => ({
@@ -3611,7 +3497,7 @@ export function RecepcionCheckinPage() {
         .getElementById(`stay-card-${targetStay.id}`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 120);
-  }, [groupedCheckoutReady, inHouse, requestedReservation, requestedTab]);
+  }, [groupedInHouse, inHouse, requestedCheckoutReservation]);
 
   const pendingCheckoutCharges = inHouse.reduce(
     (sum, stay) => sum + stay.extraCharges,
@@ -4336,7 +4222,9 @@ export function RecepcionCheckinPage() {
       setInvoiceRemaining(invoiceRemainingSummary(remainingResult.value));
     } else {
       setInvoiceRemaining(null);
-      console.warn("No se pudo consultar el bolson de facturas.", remainingResult.reason);
+      toast.error("No se pudo consultar el bolson de facturas.", {
+        description: getApiErrorMessage(remainingResult.reason),
+      });
     }
 
     setInvoiceLoading(false);
@@ -5399,27 +5287,6 @@ export function RecepcionCheckinPage() {
     });
   }
 
-  function markStayReadyForCheckOut(stay: Stay) {
-    setCheckoutReadyStayIds((current) => {
-      const next = new Set(current);
-      next.add(stay.id);
-      writeCheckoutReadyReservationIds(next);
-      return next;
-    });
-    setActiveTab("checkout");
-    setQuery("");
-    setExpandedStayCards((current) => ({
-      ...current,
-      [stay.id]: true,
-    }));
-
-    window.setTimeout(() => {
-      document
-        .getElementById(`stay-card-${stay.id}`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 120);
-  }
-
   async function completeCheckIn(stayId: string) {
     const stay = stays.find((item) => item.id === stayId);
     if (!stay) return;
@@ -5514,13 +5381,7 @@ export function RecepcionCheckinPage() {
           : ["reservations", "rooms"],
         { force: true },
       );
-      setCheckoutReadyStayIds((current) => {
-        const next = new Set(current);
-        next.delete(stay.id);
-        writeCheckoutReadyReservationIds(next);
-        return next;
-      });
-      setActiveTab("pagos-estadia");
+      setActiveTab("checkout");
       toast.success("Check-in completado", {
         description: `${stay.guestName} · Habitación ${stay.roomNumber}`,
       });
@@ -5668,13 +5529,7 @@ export function RecepcionCheckinPage() {
           : ["reservations", "rooms"],
         { force: true },
       );
-      setCheckoutReadyStayIds((current) => {
-        const next = new Set(current);
-        stayIds.forEach((id) => next.delete(id));
-        writeCheckoutReadyReservationIds(next);
-        return next;
-      });
-      setActiveTab("pagos-estadia");
+      setActiveTab("checkout");
       toast.success("Check-in conjunto completado");
     } catch (error) {
       await loadCheckoutSnapshots({ force: true });
@@ -5731,12 +5586,6 @@ export function RecepcionCheckinPage() {
             : room,
         ),
       );
-      setCheckoutReadyStayIds((current) => {
-        const next = new Set(current);
-        next.delete(stayId);
-        writeCheckoutReadyReservationIds(next);
-        return next;
-      });
       await Promise.all([
         loadCheckoutSnapshots({ force: true }),
         refreshApiState(["reservations", "rooms"], { force: true }),
@@ -5802,12 +5651,6 @@ export function RecepcionCheckinPage() {
             : room,
         ),
       );
-      setCheckoutReadyStayIds((current) => {
-        const next = new Set(current);
-        stayIds.forEach((id) => next.delete(id));
-        writeCheckoutReadyReservationIds(next);
-        return next;
-      });
       await Promise.all([
         loadCheckoutSnapshots({ force: true }),
         refreshApiState(["reservations", "rooms"], { force: true }),
@@ -5993,7 +5836,7 @@ export function RecepcionCheckinPage() {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex h-auto flex-wrap justify-start rounded-2xl bg-muted/60 p-1">
           <TabsTrigger value="checkin">Check-in</TabsTrigger>
-          <TabsTrigger value="pagos-estadia">Estadías actuales</TabsTrigger>
+          <TabsTrigger value="pagos-estadia">Pagos durante estadía</TabsTrigger>
           <TabsTrigger value="checkout">Check-out</TabsTrigger>
         </TabsList>
 
@@ -6099,8 +5942,8 @@ export function RecepcionCheckinPage() {
 
         <TabsContent value="pagos-estadia" className="space-y-4">
           <Panel
-            title="Estadías actuales"
-            description="Consulta huéspedes en habitación, registra abonos durante la estadía y manda una habitación a check-out cuando el cliente esté listo para salir."
+            title="Pagos durante estadía"
+            description="Registra abonos de huéspedes que ya están hospedados. Estos pagos se guardan con night-payments, no con cierre de check-out."
             action={
               <div className="relative w-full sm:w-80">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -6137,20 +5980,9 @@ export function RecepcionCheckinPage() {
                             {stay.code} · {formatDate(stay.checkIn)} al {formatDate(stay.checkOut)}
                           </p>
                         </div>
-                        <div className="flex flex-col gap-2 sm:items-end">
-                          <div className="rounded-2xl border bg-muted/20 px-4 py-3 text-sm">
-                            <p className="text-xs text-muted-foreground">Saldo actual</p>
-                            <p className="text-lg font-bold">{money(stayBalance(stay))}</p>
-                          </div>
-                          {checkoutReadyStayIds.has(stay.id) ? (
-                            <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-800">
-                              Lista para check-out
-                            </span>
-                          ) : (
-                            <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-800">
-                              In house
-                            </span>
-                          )}
+                        <div className="rounded-2xl border bg-muted/20 px-4 py-3 text-sm">
+                          <p className="text-xs text-muted-foreground">Saldo actual</p>
+                          <p className="text-lg font-bold">{money(stayBalance(stay))}</p>
                         </div>
                       </div>
 
@@ -6186,28 +6018,6 @@ export function RecepcionCheckinPage() {
                           readOnly={savingCheckInPaymentIds.has(stay.id)}
                         />
                       </div>
-
-                      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-muted/20 p-3 text-sm">
-                        <div>
-                          <p className="font-semibold">Estado operativo</p>
-                          <p className="text-xs text-muted-foreground">
-                            La habitación permanece In house hasta que recepción la mande a check-out.
-                          </p>
-                        </div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="gap-2 rounded-full"
-                          variant={checkoutReadyStayIds.has(stay.id) ? "outline" : "default"}
-                          disabled={checkoutReadyStayIds.has(stay.id)}
-                          onClick={() => markStayReadyForCheckOut(stay)}
-                        >
-                          <LogOut className="size-4" />
-                          {checkoutReadyStayIds.has(stay.id)
-                            ? "Lista para check-out"
-                            : "Mandar a check-out"}
-                        </Button>
-                      </div>
                     </article>
                   );
                 })
@@ -6218,8 +6028,8 @@ export function RecepcionCheckinPage() {
 
         <TabsContent value="checkout" className="space-y-4">
           <Panel
-            title="Habitaciones listas para check-out"
-            description="Solo aparecen las habitaciones que recepción marcó como listas para check-out desde Estadías actuales."
+            title="Habitaciones con huésped"
+            description="Las habitaciones se ordenan por la salida más próxima. Puedes buscar por huésped, DPI, teléfono o habitación."
             action={
               <div className="relative w-full sm:w-80">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -6233,12 +6043,12 @@ export function RecepcionCheckinPage() {
             }
           >
             <div className="space-y-3">
-              {groupedCheckoutReady.length === 0 ? (
+              {groupedInHouse.length === 0 ? (
                 <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-                  No hay habitaciones marcadas como listas para check-out con ese filtro.
+                  No hay huéspedes en habitación con ese filtro.
                 </div>
               ) : (
-                groupedCheckoutReady.map((group) => {
+                groupedInHouse.map((group) => {
                   const groupKey = `checkout|${group.id}`;
                   const groupPayments =
                     groupPaymentOverrides[groupKey] ?? groupPaymentsForStays(group.stays);

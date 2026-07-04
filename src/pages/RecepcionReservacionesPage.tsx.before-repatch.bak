@@ -92,24 +92,6 @@ import type {
 } from "@/lib/types";
 
 type ReservationSource = "Llamada" | "WhatsApp" | "Correo" | "Presencial";
-
-const CHECKOUT_READY_STORAGE_KEY = "casa-luna-checkout-ready-reservations";
-
-function readCheckoutReadyReservationIds() {
-  if (typeof window === "undefined") return new Set<string>();
-
-  try {
-    const raw = window.localStorage.getItem(CHECKOUT_READY_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return new Set<string>(
-      Array.isArray(parsed)
-        ? parsed.filter((item): item is string => typeof item === "string")
-        : [],
-    );
-  } catch {
-    return new Set<string>();
-  }
-}
 type ReservationStatus =
   | "Pre-reserva"
   | "Confirmada"
@@ -1936,15 +1918,9 @@ function SelectInput(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
 function plannerReservationStyle(
   reservation: Reservation,
   room: RoomAvailability,
-  checkoutReadyReservationIds: Set<string>,
 ) {
   const isCurrentStay =
     room.status === "Ocupada" && dateInReservation(reservation, todayIso());
-  const isReadyForCheckout = checkoutReadyReservationIds.has(reservation.id);
-
-  if (isReadyForCheckout) {
-    return "border-blue-500/30 bg-blue-600 text-white shadow-blue-900/20";
-  }
 
   if (reservation.status === "Checkout") {
     return "border-blue-500/30 bg-blue-600 text-white shadow-blue-900/20";
@@ -1971,9 +1947,7 @@ function plannerReservationStyle(
 function plannerReservationLabel(
   reservation: Reservation,
   room: RoomAvailability,
-  checkoutReadyReservationIds: Set<string>,
 ) {
-  if (checkoutReadyReservationIds.has(reservation.id)) return "Lista para check-out";
   if (reservation.status === "Checkout") return "Checkout realizado";
   if (room.status === "Ocupada" && dateInReservation(reservation, todayIso())) {
     return "Ocupada";
@@ -1988,11 +1962,9 @@ function plannerReservationLabel(
 function PlannerReservationDetails({
   reservation,
   room,
-  checkoutReadyReservationIds,
 }: {
   reservation: Reservation;
   room: RoomAvailability;
-  checkoutReadyReservationIds: Set<string>;
 }) {
   const balance = Math.max(0, reservation.total - reservation.paid);
 
@@ -2009,7 +1981,7 @@ function PlannerReservationDetails({
             </p>
           </div>
           <span className="shrink-0 rounded-full border bg-muted/40 px-2.5 py-1 text-[11px] font-semibold">
-            {plannerReservationLabel(reservation, room, checkoutReadyReservationIds)}
+            {plannerReservationLabel(reservation, room)}
           </span>
         </div>
       </div>
@@ -2144,11 +2116,9 @@ function PlannerBoard({
   onClearSelection,
   onReservationOpen,
   onReservationExtend,
-  checkoutReadyReservationIds,
 }: {
   rooms: RoomAvailability[];
   reservations: Reservation[];
-  checkoutReadyReservationIds: Set<string>;
   cleaningBlocks: CleaningBlock[];
   dates: string[];
   selectedCells: string[];
@@ -2641,7 +2611,7 @@ function PlannerBoard({
             Rojo: ocupada
           </span>
           <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-blue-800">
-            Azul: lista para check-out
+            Azul: checkout/lista
           </span>
           <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-800">
             Morado: limpieza
@@ -3048,11 +3018,7 @@ function PlannerBoard({
                                 onClick={() => onReservationOpen(reservation)}
                                 className={cn(
                                   "absolute top-9 z-10 flex h-9 items-center gap-2 overflow-hidden rounded-full border px-2 text-left text-xs font-semibold shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl sm:px-3",
-                                  plannerReservationStyle(
-                                    reservation,
-                                    room,
-                                    checkoutReadyReservationIds,
-                                  ),
+                                  plannerReservationStyle(reservation, room),
                                   extensionDragging &&
                                     "pointer-events-none transition-none duration-0",
                                   draftForReservation &&
@@ -3087,7 +3053,6 @@ function PlannerBoard({
                               <PlannerReservationDetails
                                 reservation={reservation}
                                 room={room}
-                                checkoutReadyReservationIds={checkoutReadyReservationIds}
                               />
                             </HoverCardContent>
                           </HoverCard>
@@ -3393,8 +3358,6 @@ function ReservationCard({
   onPrintPaymentReceipt,
   onIssueInvoice,
   onAbonosChange,
-  hasUnsavedPaymentChanges = false,
-  onSavePayments,
 }: {
   reservation: Reservation;
   credit?: GuestCreditInfo;
@@ -3406,8 +3369,6 @@ function ReservationCard({
   onPrintPaymentReceipt: (payment: PaymentRecord) => void;
   onIssueInvoice: () => void;
   onAbonosChange: (payments: PaymentRecord[]) => void;
-  hasUnsavedPaymentChanges?: boolean;
-  onSavePayments?: () => void;
 }) {
   const balance = reservation.total - reservation.paid;
   const invoiceAmounts = reservationInvoiceDisplayAmounts(reservation);
@@ -3511,61 +3472,40 @@ function ReservationCard({
       ) : null}
 
       {canManageAbonos ? (
-        <>
-          <PaymentBreakdownCard
-            title={
-              reservation.status === "Ocupada"
-                ? "Pagos de la reserva y estadía"
-                : "Pagos de la reserva"
-            }
-            description={
-              reservation.status === "Ocupada"
-                ? "Puedes registrar pagos adicionales mientras la habitación esté ocupada."
-                : "Agrega pagos antes de enviar la reserva a check-in. Luego podrás facturarlos desde esta misma reserva."
-            }
-            total={reservation.total}
-            payments={reservation.payments}
-            onChange={onAbonosChange}
-            isPaymentReadOnly={(payment) => paymentBackendId(payment) !== null}
-            isPaymentRemovable={(payment) =>
-              paymentBackendId(payment) === null ||
-              reservationPaymentInvoicedAmount(payment) <= 0.01
-            }
-            stage="reserva"
-            allowCredit={
-              Boolean(creditInfo) ||
-              reservation.payments.some((payment) => payment.method === "credito")
-            }
-            creditInfo={creditInfo}
-            addLabel="Agregar pago"
-            paidLabel="Pagos registrados"
-            emptyLabel="Sin pagos registrados todavía."
-            referencePlaceholder="Noche 1, boleta, voucher..."
-            onPrintPayment={onPrintPaymentReceipt}
-            showInvoiceStatus
-            headerLayout="inline"
-            className="mt-4"
-          />
-
-          {hasUnsavedPaymentChanges ? (
-            <div className="mt-3 flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50/80 p-3 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="font-semibold">Pagos pendientes de guardar</p>
-                <p className="text-xs text-amber-900/80">
-                  Los cambios no se enviarán al backend hasta presionar Guardar pagos.
-                </p>
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                className="shrink-0 rounded-full"
-                onClick={onSavePayments}
-              >
-                Guardar pagos
-              </Button>
-            </div>
-          ) : null}
-        </>
+        <PaymentBreakdownCard
+          title={
+            reservation.status === "Ocupada"
+              ? "Pagos de la reserva y estadía"
+              : "Pagos de la reserva"
+          }
+          description={
+            reservation.status === "Ocupada"
+              ? "Puedes registrar pagos adicionales mientras la habitación esté ocupada."
+              : "Agrega pagos antes de enviar la reserva a check-in. Luego podrás facturarlos desde esta misma reserva."
+          }
+          total={reservation.total}
+          payments={reservation.payments}
+          onChange={onAbonosChange}
+          isPaymentReadOnly={(payment) => paymentBackendId(payment) !== null}
+          isPaymentRemovable={(payment) =>
+            paymentBackendId(payment) === null ||
+            reservationPaymentInvoicedAmount(payment) <= 0.01
+          }
+          stage="reserva"
+          allowCredit={
+            Boolean(creditInfo) ||
+            reservation.payments.some((payment) => payment.method === "credito")
+          }
+          creditInfo={creditInfo}
+          addLabel="Agregar pago"
+          paidLabel="Pagos registrados"
+          emptyLabel="Sin pagos registrados todavía."
+          referencePlaceholder="Noche 1, boleta, voucher..."
+          onPrintPayment={onPrintPaymentReceipt}
+          showInvoiceStatus
+          headerLayout="inline"
+          className="mt-4"
+        />
       ) : (
         <div className="mt-4 rounded-2xl border bg-muted/20 p-4 text-sm text-muted-foreground">
           {checkoutCompleted
@@ -3672,7 +3612,7 @@ function ReservationCard({
             className="group/action gap-2 rounded-full border-blue-200 text-blue-800 hover:bg-blue-50 hover:shadow-sm"
           >
             <Link
-              to={`/recepcion/check-in?tab=checkin&reservation=${encodeURIComponent(
+              to={`/recepcion/check-in?reservation=${encodeURIComponent(
                 reservation.id,
               )}`}
             >
@@ -3689,12 +3629,12 @@ function ReservationCard({
             className="group/action gap-2 rounded-full shadow-sm hover:shadow-md"
           >
             <Link
-              to={`/recepcion/check-in?tab=pagos-estadia&reservation=${encodeURIComponent(
+              to={`/recepcion/check-in?tab=checkout&reservation=${encodeURIComponent(
                 reservation.id,
               )}`}
             >
-              <Hotel className="size-4 transition-transform group-hover/action:-translate-y-0.5" />
-              Ver estancia actual
+              <LogOut className="size-4 transition-transform group-hover/action:translate-x-0.5" />
+              Iniciar check-out
             </Link>
           </Button>
         ) : null}
@@ -3751,7 +3691,6 @@ export function RecepcionReservacionesPage() {
     rooms: hotelRooms,
     reservations: clientStayHistory,
   } = useStore();
-
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [dirtyReservationPaymentIds, setDirtyReservationPaymentIds] = useState<
     Set<string>
@@ -3764,23 +3703,6 @@ export function RecepcionReservacionesPage() {
   const [reservationDateFrom, setReservationDateFrom] = useState("");
   const [reservationDateTo, setReservationDateTo] = useState("");
   const [activeTab, setActiveTab] = useState("mapa");
-  const [checkoutReadyReservationIds, setCheckoutReadyReservationIds] =
-    useState<Set<string>>(() => readCheckoutReadyReservationIds());
-
-  useEffect(() => {
-    const refreshCheckoutReady = () => {
-      setCheckoutReadyReservationIds(readCheckoutReadyReservationIds());
-    };
-
-    refreshCheckoutReady();
-    window.addEventListener("storage", refreshCheckoutReady);
-    window.addEventListener("casa-luna-checkout-ready-change", refreshCheckoutReady);
-
-    return () => {
-      window.removeEventListener("storage", refreshCheckoutReady);
-      window.removeEventListener("casa-luna-checkout-ready-change", refreshCheckoutReady);
-    };
-  }, []);
   const [plannerStart, setPlannerStart] = useState(() => todayIso());
   const [plannerDays, setPlannerDays] = useState(30);
   const [selectedPlannerCells, setSelectedPlannerCells] = useState<string[]>(
@@ -3892,9 +3814,9 @@ export function RecepcionReservacionesPage() {
       );
 
       return incomingReservations.map((incoming) => {
-        if (!dirtyReservationPaymentIdsRef.current.has(incoming.id)) {
+        if (incoming.status !== "Ocupada") return incoming;
+        if (!dirtyReservationPaymentIdsRef.current.has(incoming.id))
           return incoming;
-        }
 
         const draft = currentById.get(incoming.id);
         if (!draft) return incoming;
@@ -5233,8 +5155,35 @@ export function RecepcionReservacionesPage() {
     }
   }
 
-  // En Reservaciones los pagos se guardan manualmente con el botón "Guardar pagos".
-  // No usar autosave aquí: al escribir montos como 300, un debounce podía guardar solo "3".
+  useEffect(() => {
+    if (dirtyReservationPaymentIds.size === 0) return;
+
+    const ids = Array.from(dirtyReservationPaymentIds).filter((id) => {
+      const reservation = reservations.find((item) => item.id === id);
+      if (!reservation) return false;
+
+      const hasDeletedSavedPayments =
+        (deletedReservationPaymentIdsRef.current[id]?.length ?? 0) > 0;
+      const hasNewPaymentsWithAmount = reservation.payments.some(
+        (payment) =>
+          payment.stage === "reserva" &&
+          Number(payment.amount || 0) > 0 &&
+          paymentBackendId(payment) === null,
+      );
+
+      return hasDeletedSavedPayments || hasNewPaymentsWithAmount;
+    });
+
+    if (ids.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      ids.forEach((id) => {
+        void saveReservationPayments(id, { silent: true });
+      });
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [dirtyReservationPaymentIds, reservations]);
 
   async function loadInvoiceSupportData(reservation: Reservation) {
     setInvoiceLoading(true);
@@ -5289,7 +5238,9 @@ export function RecepcionReservacionesPage() {
       setInvoiceRemaining(invoiceRemainingSummary(remainingResult.value));
     } else {
       setInvoiceRemaining(null);
-      console.warn("No se pudo consultar el saldo de documentos fiscales.", remainingResult.reason);
+      toast.error("No se pudo consultar el saldo de documentos fiscales.", {
+        description: getApiErrorMessage(remainingResult.reason),
+      });
     }
 
     setInvoiceLoading(false);
@@ -5366,11 +5317,11 @@ export function RecepcionReservacionesPage() {
     let targetReservation = reservation;
 
     if (dirtyReservationPaymentIdsRef.current.has(reservation.id)) {
-      toast.warning("Guarda los pagos antes de facturar.", {
-        description:
-          "Hay cambios pendientes en los pagos de esta reserva. Presiona Guardar pagos y luego vuelve a facturar.",
+      const savedReservation = await saveReservationPayments(reservation.id, {
+        silent: true,
       });
-      return;
+      if (!savedReservation) return;
+      targetReservation = savedReservation;
     }
 
     const reservationId = numericBackendId(targetReservation.id);
@@ -5482,7 +5433,7 @@ export function RecepcionReservacionesPage() {
   }
 
   useEffect(() => {
-    if (!invoiceForm) return;
+    if (!invoiceForm || invoiceForm.useCustomerTaxInfo) return;
     const taxId = normalizeNitForLookup(invoiceForm.taxId);
 
     if (!taxId || taxId === "CF") {
@@ -5504,7 +5455,7 @@ export function RecepcionReservacionesPage() {
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [invoiceForm?.taxId]);
+  }, [invoiceForm?.taxId, invoiceForm?.useCustomerTaxInfo]);
 
   async function lookupInvoiceNitInfo(
     options: { silent?: boolean; taxIdOverride?: string } = {},
@@ -6604,7 +6555,6 @@ export function RecepcionReservacionesPage() {
             <PlannerBoard
               rooms={rooms}
               reservations={reservations}
-              checkoutReadyReservationIds={checkoutReadyReservationIds}
               cleaningBlocks={cleaningBlocks}
               dates={plannerDates}
               selectedCells={selectedPlannerCells}
@@ -7371,12 +7321,6 @@ export function RecepcionReservacionesPage() {
                     onAbonosChange={(payments) =>
                       updateReservationPayments(reservation.id, payments)
                     }
-                    hasUnsavedPaymentChanges={dirtyReservationPaymentIds.has(
-                      reservation.id,
-                    )}
-                    onSavePayments={() => {
-                      void saveReservationPayments(reservation.id);
-                    }}
                   />
                 ))
               )}
