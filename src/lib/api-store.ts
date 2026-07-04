@@ -1248,9 +1248,10 @@ function mapBreakfastVoucher(item: unknown, index = 0): BreakfastVoucher {
     guestName: pickString(record, ["guest_name", "guestName"], "Huesped"),
     room: pickString(record, ["room_number", "room"], ""),
     type: optionId ? String(optionId) : pickString(record, ["type", "breakfast_option"], "continental"),
+    drink: pickOptionalString(record, ["beverage", "drink"]),
     redeemed: mapRedeemed(record),
     redeemedAt: pickOptionalString(record, ["redeemed_at", "redeemedAt"]),
-    notes: pickOptionalString(record, ["notes", "beverage"]),
+    notes: pickOptionalString(record, ["notes"]),
   }
 }
 

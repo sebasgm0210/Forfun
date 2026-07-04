@@ -229,6 +229,7 @@ export interface BreakfastVoucher {
   guestName: string
   room: string
   type: BreakfastType
+  drink?: string
   redeemed: boolean
   redeemedAt?: string
   notes?: string
