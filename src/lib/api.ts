@@ -215,6 +215,10 @@ export interface CreateBreakfastSelectionFromQrModel {
   notes?: string | null
 }
 
+export interface UpdateBreakfastSelectionOptionModel {
+  id_breakfast_option?: number
+}
+
 export interface CreateBreakfastVoucherModel {
   id_stay_room?: number
   id_breakfast_option?: number
@@ -987,6 +991,16 @@ export const api = {
       apiRequest<T>(`/api/breakfast/selections/${segment(id)}/restore`, {
         method: "PATCH",
       }),
+    // Endpoint aun no existe en el backend (pendiente de implementar). Se deja listo en el
+    // frontend para habilitar el boton "Modificar plato" en cuanto el backend lo publique.
+    updateSelectionOption: <T = unknown>(id: ApiId, body: UpdateBreakfastSelectionOptionModel) =>
+      apiRequest<T, UpdateBreakfastSelectionOptionModel>(
+        `/api/breakfast/selections/${segment(id)}/breakfast-option`,
+        {
+          method: "PATCH",
+          body,
+        },
+      ),
     listTodayVouchers: <T = unknown[]>(query?: BreakfastStatusQuery) =>
       apiRequest<T>("/api/breakfast/vouchers/today", { query }),
     createVoucher: <T = unknown>(body: CreateBreakfastVoucherModel) =>
@@ -1701,9 +1715,23 @@ function getPayloadMessage(payload: unknown) {
   if (isRecord(payload)) {
     const message = payload.message ?? payload.title
     if (typeof message === "string" && message.length > 0) return message
+
+    const validationMessages = extractValidationMessages(payload.data)
+    if (validationMessages) return validationMessages
   }
 
   return null
+}
+
+function extractValidationMessages(data: unknown) {
+  if (!Array.isArray(data)) return null
+
+  const messages = data
+    .filter(isRecord)
+    .map((item) => item.errorMessage ?? item.error_message ?? item.message)
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+
+  return messages.length ? messages.join(" ") : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

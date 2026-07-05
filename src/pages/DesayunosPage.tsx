@@ -7,12 +7,15 @@ import {
   Clock3,
   Coffee,
   Copy,
+  Download,
   ExternalLink,
   ImagePlus,
+  Loader2,
   Pencil,
   Plus,
   MessageSquareText,
   QrCode,
+  RefreshCw,
   Search,
   Save,
   Smartphone,
@@ -35,17 +38,33 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { api, getApiErrorMessage } from "@/lib/api"
+import { getSessionUser } from "@/lib/auth"
 import { breakfastQrSvgDataUrl, breakfastQrUrl, roomQrCode } from "@/lib/breakfast-qr"
-import { formatDate, useStore } from "@/lib/store"
+import { formatDate, formatDateShort, useStore } from "@/lib/store"
 import { cn } from "@/lib/utils"
 import type { BreakfastOption, BreakfastType, Reservation, Room } from "@/lib/types"
 
 type BreakfastSelectionStatus = "recibido" | "canjeado"
-type BreakfastTab = "pedidos" | "habitaciones" | "vistaQr" | "catalogo" | "tickets" | "backend"
+type BreakfastTab =
+  | "pedidos"
+  | "habitaciones"
+  | "vistaQr"
+  | "catalogo"
+  | "ticketsFisicos"
+  | "backend"
+type TicketSubTab = "crearTicket" | "gestionarTickets"
 type BreakfastFilter = "todos" | BreakfastSelectionStatus
 
 type BreakfastSelection = {
@@ -76,6 +95,7 @@ type RoomQr = {
   qrCode: string
   qrUrl: string
   reservation?: Reservation
+  stayRoomId?: number
   guestName: string
   pendingSelection?: BreakfastSelection
   allowance: BreakfastAllowance
@@ -106,7 +126,12 @@ type BreakfastAllowance = {
   dateInStay: boolean
 }
 
-const drinkOptions = ["Café", "Té", "Jugo natural", "Agua pura"]
+// El backend valida "beverage" contra una lista fija (sin tildes). Mostramos con tilde por estética
+// pero mandamos el valor exacto que el backend acepta.
+const drinkChoices = [
+  { label: "Café", value: "Cafe" },
+  { label: "Té", value: "Te" },
+]
 const breakfastAccents = [
   "border-sky-200 bg-sky-50 text-sky-950",
   "border-amber-200 bg-amber-50 text-amber-950",
@@ -347,16 +372,73 @@ function BreakfastMetric({
   )
 }
 
-function MiniQr({ code, value }: { code: string; value: string }) {
+function MiniQr({
+  code,
+  value,
+  roomNumber,
+}: {
+  code: string
+  value: string
+  roomNumber?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const qrSrc = breakfastQrSvgDataUrl(value)
+  const title = roomNumber ? `QR · Habitación ${roomNumber}` : `QR ${code}`
+
+  function downloadQr() {
+    const image = new Image()
+    image.onload = () => {
+      const size = 1024
+      const canvas = document.createElement("canvas")
+      canvas.width = size
+      canvas.height = size
+      const context = canvas.getContext("2d")
+      if (!context) {
+        toast.error("No se pudo generar la imagen del QR")
+        return
+      }
+      context.fillStyle = "#ffffff"
+      context.fillRect(0, 0, size, size)
+      context.drawImage(image, 0, 0, size, size)
+      const link = document.createElement("a")
+      link.href = canvas.toDataURL("image/png")
+      link.download = `qr-desayuno-${roomNumber ?? code}.png`
+      link.click()
+    }
+    image.onerror = () => {
+      toast.error("No se pudo generar la imagen del QR")
+    }
+    image.src = qrSrc
+  }
+
   return (
-    <div className="grid size-28 shrink-0 place-items-center overflow-hidden rounded-2xl border bg-white p-2 shadow-sm">
-      <img
-        src={breakfastQrSvgDataUrl(value)}
-        alt={`QR real ${code}`}
-        className="size-full"
-        loading="lazy"
-      />
-    </div>
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="grid size-28 shrink-0 place-items-center overflow-hidden rounded-2xl border bg-white p-2 shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+        title="Ver y descargar QR"
+      >
+        <img src={qrSrc} alt={`QR real ${code}`} className="size-full" loading="lazy" />
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>Código {code}</DialogDescription>
+          </DialogHeader>
+          <div className="grid place-items-center rounded-2xl border bg-white p-6">
+            <img src={qrSrc} alt={`QR real ${code}`} className="w-full max-w-xs" />
+          </div>
+          <DialogFooter>
+            <Button className="gap-2 rounded-full" onClick={downloadQr}>
+              <Download className="size-4" />
+              Descargar imagen
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 
@@ -378,7 +460,7 @@ function BreakfastPersonStatus({ item }: { item: RoomQr }) {
                 : "border-amber-200 bg-amber-50 text-amber-900",
             )}
           >
-            <span>Persona {index + 1}</span>
+            <span>Huésped {index + 1}</span>
             <span>{redeemed ? "Canjeado" : "Pendiente"}</span>
           </div>
         )
@@ -436,21 +518,22 @@ export function DesayunosPage() {
     dispatch,
     refreshApiState,
   } = useStore()
+  const currentUser = getSessionUser()
+  const isAdmin = currentUser?.role === "administrador" || currentUser?.role === "gerencia"
   const [activeTab, setActiveTab] = useState<BreakfastTab>("pedidos")
+  const [ticketSubTab, setTicketSubTab] = useState<TicketSubTab>("crearTicket")
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<BreakfastFilter>("todos")
   const [selectedRoomNumber, setSelectedRoomNumber] = useState("204")
-  const [guestForm, setGuestForm] = useState({
-    type: "americano" as BreakfastType,
-    drink: "Café",
-    notes: "",
-  })
+  const [selectedStayDate, setSelectedStayDate] = useState(todayIso())
   const [physicalTicketForm, setPhysicalTicketForm] = useState({
-    roomNumber: "204",
+    roomNumber: "",
     type: "americano" as BreakfastType,
-    drink: "Café",
+    drink: drinkChoices[0].value,
     notes: "",
   })
+  const [creatingTicket, setCreatingTicket] = useState(false)
+  const [redeemingTicketId, setRedeemingTicketId] = useState<string | null>(null)
   const [editingOptionId, setEditingOptionId] = useState<string | null>(null)
   const [pendingDialog, setPendingDialog] = useState<PendingDialog>(null)
   const optionFormRef = useRef<HTMLDivElement>(null)
@@ -463,7 +546,46 @@ export function DesayunosPage() {
   })
   const [roomQrSummaries, setRoomQrSummaries] = useState<BreakfastRoomQrSummary[]>([])
   const [qrSelections, setQrSelections] = useState<BreakfastSelection[]>([])
+  const [editingDishSelectionId, setEditingDishSelectionId] = useState<string | null>(null)
+  const [editingDishOptionId, setEditingDishOptionId] = useState("")
+  const [savingDishChange, setSavingDishChange] = useState(false)
   const [dailyReportMetrics, setDailyReportMetrics] = useState<BreakfastDailyReportMetric[]>([])
+  const [refreshingBreakfast, setRefreshingBreakfast] = useState(false)
+
+  async function loadDailyReport() {
+    const response = await api.breakfast.getDailyReport<unknown>()
+    setDailyReportMetrics(mapBreakfastDailyReport(response))
+  }
+
+  async function loadRoomQrSummaries() {
+    const response = await api.breakfast.listRoomQrCodes<unknown>()
+    const latestByRoom = new Map<string, BreakfastRoomQrSummary>()
+    apiArray(response)
+      .map(mapBreakfastRoomQr)
+      .filter((item): item is BreakfastRoomQrSummary => Boolean(item))
+      .forEach((item) => {
+        const current = latestByRoom.get(item.roomId)
+        if (!current || item.stayRoomId >= current.stayRoomId) {
+          latestByRoom.set(item.roomId, item)
+        }
+      })
+    setRoomQrSummaries(Array.from(latestByRoom.values()))
+  }
+
+  async function refreshBreakfastData() {
+    setRefreshingBreakfast(true)
+    const results = await Promise.allSettled([
+      loadRoomQrSummaries(),
+      reloadTodaySelections(),
+      loadDailyReport(),
+    ])
+    setRefreshingBreakfast(false)
+    if (results.some((result) => result.status === "rejected")) {
+      toast.error("Algunos datos de desayunos no se pudieron actualizar")
+    } else {
+      toast.success("Datos de desayunos actualizados")
+    }
+  }
 
   useEffect(() => {
     void refreshApiState(
@@ -473,54 +595,20 @@ export function DesayunosPage() {
   }, [refreshApiState])
 
   useEffect(() => {
-    let cancelled = false
-
-    api.breakfast.getDailyReport<unknown>()
-      .then((response) => {
-        if (cancelled) return
-        setDailyReportMetrics(mapBreakfastDailyReport(response))
+    loadDailyReport().catch((error) => {
+      setDailyReportMetrics([])
+      toast.error("No se pudo cargar el reporte diario de desayunos", {
+        description: getApiErrorMessage(error),
       })
-      .catch((error) => {
-        if (cancelled) return
-        setDailyReportMetrics([])
-        toast.error("No se pudo cargar el reporte diario de desayunos", {
-          description: getApiErrorMessage(error),
-        })
-      })
-
-    return () => {
-      cancelled = true
-    }
+    })
   }, [])
 
   useEffect(() => {
-    let cancelled = false
-
-    api.breakfast.listRoomQrCodes<unknown>()
-      .then((response) => {
-        if (cancelled) return
-        const latestByRoom = new Map<string, BreakfastRoomQrSummary>()
-        apiArray(response)
-          .map(mapBreakfastRoomQr)
-          .filter((item): item is BreakfastRoomQrSummary => Boolean(item))
-          .forEach((item) => {
-            const current = latestByRoom.get(item.roomId)
-            if (!current || item.stayRoomId >= current.stayRoomId) {
-              latestByRoom.set(item.roomId, item)
-            }
-          })
-        setRoomQrSummaries(Array.from(latestByRoom.values()))
+    loadRoomQrSummaries().catch((error) => {
+      toast.error("No se pudieron cargar las habitaciones con desayuno", {
+        description: getApiErrorMessage(error),
       })
-      .catch((error) => {
-        if (cancelled) return
-        toast.error("No se pudieron cargar las habitaciones con desayuno", {
-          description: getApiErrorMessage(error),
-        })
-      })
-
-    return () => {
-      cancelled = true
-    }
+    })
   }, [])
 
   useEffect(() => {
@@ -548,11 +636,6 @@ export function DesayunosPage() {
   }, [breakfastOptions])
 
   const firstBreakfastOption = breakfastOptions[0]
-  const selectedBreakfastType = breakfastOptions.some(
-    (option) => option.id === guestForm.type,
-  )
-    ? guestForm.type
-    : firstBreakfastOption?.id ?? ""
   const selectedPhysicalBreakfastType = breakfastOptions.some(
     (option) => option.id === physicalTicketForm.type,
   )
@@ -691,8 +774,11 @@ export function DesayunosPage() {
         return {
           room,
           reservation,
+          stayRoomId:
+            summary?.stayRoomId ??
+            (reservation?.reservationRoomId ? Number(reservation.reservationRoomId) : undefined),
           qrCode,
-          qrUrl: summary?.qrUrl ?? breakfastQrUrl(qrCode),
+          qrUrl: breakfastQrUrl(qrCode),
           guestName: summary?.guestName ?? guest?.name ?? "Sin huésped asignado",
           allowance,
           pendingSelection: qrSelections.find(
@@ -713,12 +799,65 @@ export function DesayunosPage() {
   const selectedRoom =
     roomDirectory.find((item) => item.room.number === selectedRoomNumber) ??
     roomDirectory[0]
-  const selectedPhysicalRoom =
-    roomDirectory.find(
-      (item) => item.room.number === physicalTicketForm.roomNumber && item.reservation,
-    ) ?? roomDirectory.find((item) => item.reservation)
+  const selectedPhysicalRoom = physicalTicketForm.roomNumber
+    ? roomDirectory.find(
+        (item) => item.room.number === physicalTicketForm.roomNumber && item.reservation,
+      )
+    : undefined
   const selectedRoomAllowance = selectedRoom?.allowance ?? emptyAllowance()
   const selectedPhysicalAllowance = selectedPhysicalRoom?.allowance ?? emptyAllowance()
+
+  const stayDays = useMemo(() => {
+    const reservation = selectedRoom?.reservation
+    if (!reservation) return []
+    const days: string[] = []
+    const cursor = new Date(`${reservation.checkIn}T00:00:00`)
+    const end = new Date(`${reservation.checkOut}T00:00:00`)
+    while (cursor < end) {
+      days.push(cursor.toISOString().slice(0, 10))
+      cursor.setDate(cursor.getDate() + 1)
+    }
+    return days
+  }, [selectedRoom])
+
+  useEffect(() => {
+    if (!stayDays.length) return
+    setSelectedStayDate((current) =>
+      stayDays.includes(current) ? current : stayDays.includes(todayIso()) ? todayIso() : stayDays[0],
+    )
+  }, [stayDays])
+
+  const stayDaySelections = useMemo(() => {
+    const reservationId = selectedRoom?.reservation?.id
+    if (!reservationId) return []
+
+    const fromQr = qrSelections
+      .filter(
+        (selection) =>
+          selectionReservationId(selection) === reservationId && selection.date === selectedStayDate,
+      )
+      .map((selection) => ({
+        id: `qr-${selection.id}`,
+        type: selection.type,
+        drink: selection.drink,
+        status: selection.status,
+        source: "QR" as const,
+      }))
+
+    const fromVouchers = breakfasts
+      .filter(
+        (voucher) => voucher.reservationId === reservationId && voucher.date === selectedStayDate,
+      )
+      .map((voucher) => ({
+        id: `voucher-${voucher.id}`,
+        type: voucher.type,
+        drink: undefined as string | undefined,
+        status: (voucher.redeemed ? "canjeado" : "recibido") as BreakfastSelectionStatus,
+        source: "Físico" as const,
+      }))
+
+    return [...fromQr, ...fromVouchers]
+  }, [selectedRoom, qrSelections, breakfasts, selectedStayDate])
 
   const filteredSelections = useMemo(() => {
     const text = query.trim().toLowerCase()
@@ -819,55 +958,47 @@ export function DesayunosPage() {
     }
   }
 
+  function startEditDish(selection: BreakfastSelection) {
+    setEditingDishSelectionId(selection.id)
+    setEditingDishOptionId(selection.type)
+  }
+
+  function cancelEditDish() {
+    setEditingDishSelectionId(null)
+    setEditingDishOptionId("")
+  }
+
+  async function saveDishChange(id: string) {
+    const optionId = Number(editingDishOptionId)
+    if (!Number.isFinite(optionId)) {
+      toast.error("Selecciona un desayuno válido")
+      return
+    }
+
+    setSavingDishChange(true)
+    try {
+      await api.breakfast.updateSelectionOption(id, { id_breakfast_option: optionId })
+      setQrSelections((current) =>
+        current.map((item) =>
+          item.id === id ? { ...item, type: editingDishOptionId } : item,
+        ),
+      )
+      toast.success("Plato actualizado")
+      cancelEditDish()
+    } catch (error) {
+      toast.error("No se pudo modificar el plato", {
+        description: getApiErrorMessage(error),
+      })
+    } finally {
+      setSavingDishChange(false)
+    }
+  }
+
   function openQrLink(room: RoomQr) {
     window.open(room.qrUrl, "_blank", "noopener,noreferrer")
     toast.success("Vista QR abierta", {
       description: `Habitación ${room.room.number}`,
     })
-  }
-
-  async function confirmSelection() {
-    if (!selectedRoom || !selectedBreakfastType) return
-    if (!selectedRoomAllowance.dateInStay) {
-      toast.error("El desayuno no corresponde a la fecha de estadía", {
-        description: "Cada huésped tiene desayuno por día de estadía.",
-      })
-      return
-    }
-    if (
-      selectedRoomAllowance.availableToday <= 0
-    ) {
-      toast.error("Cupo de desayunos agotado", {
-        description: `${selectedRoomAllowance.usedToday}/${selectedRoomAllowance.daily} usados hoy.`,
-      })
-      return
-    }
-
-    const optionId = Number(selectedBreakfastType)
-    if (!Number.isFinite(optionId)) {
-      toast.error("La opción de desayuno no tiene un identificador válido del servidor")
-      return
-    }
-
-    try {
-      await api.breakfast.createSelectionFromQr({
-        qr_code: selectedRoom.qrCode,
-        id_breakfast_option: optionId,
-        beverage: guestForm.drink,
-        guest_name: selectedRoom.guestName,
-        notes: guestForm.notes.trim(),
-      })
-      await reloadTodaySelections()
-      setGuestForm((current) => ({ ...current, notes: "" }))
-      setActiveTab("pedidos")
-      toast.success("Selección recibida desde QR", {
-        description: `Habitación ${selectedRoom.room.number} · ${breakfastLabel(selectedBreakfastType)}`,
-      })
-    } catch (error) {
-      toast.error("No se pudo registrar la selección", {
-        description: getApiErrorMessage(error),
-      })
-    }
   }
 
   async function copyQrLink(room: RoomQr) {
@@ -884,22 +1015,45 @@ export function DesayunosPage() {
     }
   }
 
-  function redeemPhysicalVoucher(id: string) {
+  async function redeemPhysicalTicket(id: string) {
     const voucher = breakfasts.find((breakfast) => breakfast.id === id)
     if (!voucher || voucher.redeemed) return
-    dispatch({ type: "BREAKFAST_REDEEM", id })
-    toast.success("Ticket físico canjeado", {
-      description: `Habitación ${voucher.room} · ${breakfastLabel(voucher.type)}`,
-    })
+
+    const numericVoucherId = Number(id)
+    if (!Number.isFinite(numericVoucherId)) {
+      toast.error("El ticket no tiene un identificador válido del servidor")
+      return
+    }
+
+    setRedeemingTicketId(id)
+    try {
+      await api.breakfast.redeemVoucher(numericVoucherId, {
+        redeemed_by: currentUser?.name ?? "Recepción",
+      })
+      await refreshApiState(["breakfasts"], { force: true })
+      toast.success("Ticket físico canjeado", {
+        description: `Habitación ${voucher.room} · ${breakfastLabel(voucher.type)}`,
+      })
+    } catch (error) {
+      toast.error("No se pudo canjear el ticket físico", {
+        description: getApiErrorMessage(error),
+      })
+    } finally {
+      setRedeemingTicketId(null)
+    }
   }
 
-  function createPhysicalVoucher() {
+  async function createPhysicalTicket() {
     if (!selectedPhysicalRoom || !selectedPhysicalBreakfastType) {
       toast.error("Selecciona una habitación activa y un desayuno disponible")
       return
     }
     if (!selectedPhysicalRoom.reservation) {
       toast.error("No hay reserva activa para esta habitación")
+      return
+    }
+    if (!selectedPhysicalRoom.stayRoomId) {
+      toast.error("No se pudo identificar la habitación de la reserva en el servidor")
       return
     }
     if (!selectedPhysicalAllowance.dateInStay) {
@@ -916,33 +1070,39 @@ export function DesayunosPage() {
       return
     }
 
-    const notes = [
-      `Bebida: ${physicalTicketForm.drink}`,
-      physicalTicketForm.notes.trim(),
-    ]
-      .filter(Boolean)
-      .join(" · ")
+    const optionId = Number(selectedPhysicalBreakfastType)
+    if (!Number.isFinite(optionId)) {
+      toast.error("La opción de desayuno no tiene un identificador válido del servidor")
+      return
+    }
 
-    dispatch({
-      type: "BREAKFAST_CREATE",
-      voucher: {
-        id: `bf-manual-${Date.now()}`,
-        reservationId: selectedPhysicalRoom.reservation.id,
-        date: todayIso(),
-        guestName:
+    setCreatingTicket(true)
+    try {
+      await api.breakfast.createVoucher({
+        id_stay_room: selectedPhysicalRoom.stayRoomId,
+        id_breakfast_option: optionId,
+        beverage: physicalTicketForm.drink,
+        guest_name:
           selectedPhysicalRoom.guestName === "Sin huésped asignado"
             ? `Habitación ${selectedPhysicalRoom.room.number}`
             : selectedPhysicalRoom.guestName,
-        room: selectedPhysicalRoom.room.number,
-        type: selectedPhysicalBreakfastType,
-        redeemed: false,
-        notes,
-      },
-    })
-    setPhysicalTicketForm((current) => ({ ...current, notes: "" }))
-    toast.success("Ticket físico asignado", {
-      description: `Habitación ${selectedPhysicalRoom.room.number} · ${breakfastLabel(selectedPhysicalBreakfastType)}`,
-    })
+        notes: physicalTicketForm.notes.trim(),
+      })
+      await Promise.all([
+        loadRoomQrSummaries(),
+        refreshApiState(["breakfasts"], { force: true }),
+      ])
+      setPhysicalTicketForm((current) => ({ ...current, notes: "" }))
+      toast.success("Ticket físico creado", {
+        description: `Habitación ${selectedPhysicalRoom.room.number} · ${breakfastLabel(selectedPhysicalBreakfastType)}`,
+      })
+    } catch (error) {
+      toast.error("No se pudo crear el ticket físico", {
+        description: getApiErrorMessage(error),
+      })
+    } finally {
+      setCreatingTicket(false)
+    }
   }
 
   function breakfastOptionId(label: string) {
@@ -1185,7 +1345,7 @@ export function DesayunosPage() {
           <TabsTrigger value="habitaciones">QR por habitación</TabsTrigger>
           <TabsTrigger value="vistaQr">Vista pública</TabsTrigger>
           <TabsTrigger value="catalogo">Desayunos disponibles</TabsTrigger>
-          <TabsTrigger value="tickets">Tickets físicos</TabsTrigger>
+          <TabsTrigger value="ticketsFisicos">Tickets físicos</TabsTrigger>
           <TabsTrigger value="backend">Servidor</TabsTrigger>
         </TabsList>
 
@@ -1199,14 +1359,26 @@ export function DesayunosPage() {
                     Revisa habitación, huésped, elección y observaciones antes de canjear.
                   </p>
                 </div>
-                <div className="relative w-full lg:w-80">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    className="rounded-2xl pl-9"
-                    placeholder="Buscar habitación, huésped, desayuno..."
-                  />
+                <div className="flex items-center gap-2">
+                  <div className="relative w-full lg:w-80">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      className="rounded-2xl pl-9"
+                      placeholder="Buscar habitación, huésped, desayuno..."
+                    />
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 gap-2 rounded-full"
+                    onClick={() => void refreshBreakfastData()}
+                    disabled={refreshingBreakfast}
+                  >
+                    <RefreshCw className={cn("size-3.5", refreshingBreakfast && "animate-spin")} />
+                    Actualizar
+                  </Button>
                 </div>
               </div>
 
@@ -1290,6 +1462,40 @@ export function DesayunosPage() {
                             <p>{selection.notes}</p>
                           </div>
                         ) : null}
+
+                        {editingDishSelectionId === selection.id ? (
+                          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-2xl border border-primary/30 bg-primary/5 p-3">
+                            <select
+                              value={editingDishOptionId}
+                              onChange={(event) => setEditingDishOptionId(event.target.value)}
+                              className="h-10 min-w-40 flex-1 rounded-xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                            >
+                              {breakfastOptions.map((option) => (
+                                <option key={option.id} value={option.id}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                            <Button
+                              size="sm"
+                              className="gap-1.5 rounded-full"
+                              onClick={() => void saveDishChange(selection.id)}
+                              disabled={savingDishChange}
+                            >
+                              <Save className="size-3.5" />
+                              Guardar
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5 rounded-full"
+                              onClick={cancelEditDish}
+                            >
+                              <X className="size-3.5" />
+                              Cancelar
+                            </Button>
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="flex shrink-0 flex-col gap-2 xl:w-44">
@@ -1320,6 +1526,17 @@ export function DesayunosPage() {
                             Volver a recibido
                           </Button>
                         )}
+                        {editingDishSelectionId !== selection.id ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-2 rounded-full"
+                            onClick={() => startEditDish(selection)}
+                          >
+                            <Pencil className="size-3.5" />
+                            Modificar plato
+                          </Button>
+                        ) : null}
                       </div>
                     </div>
                   </article>
@@ -1399,9 +1616,21 @@ export function DesayunosPage() {
                   Cada tarjeta representa el QR fijo que vive en la habitación.
                 </p>
               </div>
-              <span className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
-                {roomDirectory.length} habitaciones ocupadas
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                  {roomDirectory.length} habitaciones ocupadas
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2 rounded-full"
+                  onClick={() => void refreshBreakfastData()}
+                  disabled={refreshingBreakfast}
+                >
+                  <RefreshCw className={cn("size-3.5", refreshingBreakfast && "animate-spin")} />
+                  Actualizar
+                </Button>
+              </div>
             </div>
 
             <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -1414,7 +1643,7 @@ export function DesayunosPage() {
                   )}
                 >
                   <div className="flex gap-4">
-                    <MiniQr code={item.qrCode} value={item.qrUrl} />
+                    <MiniQr code={item.qrCode} value={item.qrUrl} roomNumber={item.room.number} />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-xl font-semibold">
@@ -1476,11 +1705,11 @@ export function DesayunosPage() {
         </TabsContent>
 
         <TabsContent value="vistaQr" className="space-y-4">
-          <section className="grid gap-4 2xl:grid-cols-[360px_1fr]">
+          <section className="grid gap-4 2xl:grid-cols-[320px_1fr]">
             <div className="rounded-3xl border bg-card p-5 shadow-sm">
               <h2 className="text-xl font-semibold">Elegir habitación</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                En operación real, esto viene directo del QR escaneado.
+                Vista de solo lectura: así ve el equipo la información de cada habitación.
               </p>
               <div className="mt-4 grid gap-2">
                 {roomDirectory
@@ -1506,123 +1735,107 @@ export function DesayunosPage() {
               </div>
             </div>
 
-            <div className="rounded-[2rem] border bg-[#fffaf2] p-4 shadow-sm">
-              <div className="mx-auto max-w-sm rounded-[2rem] border bg-white p-5 shadow-xl">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="grid size-12 place-items-center rounded-2xl bg-primary/10 text-primary">
-                      <Coffee className="size-6" />
-                    </div>
-                    <div>
-                      <p className="font-serif text-2xl">Casa Luna</p>
-                      <p className="text-xs text-muted-foreground">
-                        Desayuno de cortesía
-                      </p>
-                    </div>
+            <div className="rounded-3xl border bg-[#fffaf2] p-4 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+                <div className="flex shrink-0 flex-row items-center gap-3 lg:w-40 lg:flex-col lg:text-center">
+                  <div className="grid size-10 shrink-0 place-items-center rounded-2xl bg-primary/10 text-primary">
+                    <Coffee className="size-5" />
                   </div>
-                  {selectedRoom ? <MiniQr code={selectedRoom.qrCode} value={selectedRoom.qrUrl} /> : null}
+                  <div>
+                    <p className="font-serif text-lg">Casa Luna</p>
+                    <p className="text-[0.7rem] text-muted-foreground">Desayuno de cortesía</p>
+                  </div>
+                  {selectedRoom ? (
+                    <div className="ml-auto lg:ml-0 lg:mt-2">
+                      <MiniQr
+                        code={selectedRoom.qrCode}
+                        value={selectedRoom.qrUrl}
+                        roomNumber={selectedRoom.room.number}
+                      />
+                    </div>
+                  ) : null}
                 </div>
 
-                <div className="mt-5 grid gap-3">
-                  <div className="rounded-2xl border bg-muted/20 p-4">
+                <div className="grid flex-1 gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border bg-white p-3">
                     <p className="text-xs text-muted-foreground">Habitación</p>
-                    <p className="mt-1 text-xl font-bold">
+                    <p className="mt-0.5 text-lg font-bold">
                       {selectedRoom ? selectedRoom.room.number : "-"}
                     </p>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="truncate text-xs text-muted-foreground">
                       {selectedRoom?.guestName}
                     </p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-2xl border bg-emerald-50 p-3 text-emerald-950">
-                      <p className="text-xs opacity-70">Disponibles hoy</p>
-                      <p className="mt-1 text-lg font-bold">
+                    <div className="rounded-xl border bg-emerald-50 p-2 text-center text-emerald-950">
+                      <p className="text-[0.65rem] opacity-70">Disponibles hoy</p>
+                      <p className="mt-0.5 text-sm font-bold">
                         {selectedRoomAllowance.availableToday}/{selectedRoomAllowance.daily}
                       </p>
                     </div>
-                    <div className="rounded-2xl border bg-blue-50 p-3 text-blue-950">
-                      <p className="text-xs opacity-70">Estadia total</p>
-                      <p className="mt-1 text-lg font-bold">
+                    <div className="rounded-xl border bg-blue-50 p-2 text-center text-blue-950">
+                      <p className="text-[0.65rem] opacity-70">Estadía total</p>
+                      <p className="mt-0.5 text-sm font-bold">
                         {selectedRoomAllowance.usedTotal}/{selectedRoomAllowance.total}
                       </p>
                     </div>
                   </div>
 
-                  <div className="grid gap-2">
-                    {breakfastOptions.map((option) => (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() =>
-                          setGuestForm((current) => ({ ...current, type: option.id }))
-                        }
-                        className={cn(
-                          "rounded-2xl border p-3 text-left transition hover:-translate-y-0.5",
-                          selectedBreakfastType === option.id
-                            ? option.accent
-                            : "bg-background hover:border-primary/40",
-                        )}
-                      >
-                        <BreakfastOptionPhoto option={option} className="h-24" />
-                        <p className="mt-3 font-semibold">{option.label}</p>
-                        <p className="mt-1 text-xs opacity-75">
-                          {option.description}
-                        </p>
-                      </button>
-                    ))}
-                    {breakfastOptions.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed p-4 text-center text-sm text-muted-foreground">
-                        Recepción debe agregar desayunos disponibles antes de usar el QR.
+                  {stayDays.length > 0 ? (
+                    <div className="sm:col-span-2">
+                      <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Día de estadía
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {stayDays.map((day, index) => (
+                          <button
+                            key={day}
+                            type="button"
+                            onClick={() => setSelectedStayDate(day)}
+                            className={cn(
+                              "rounded-full border px-2.5 py-1 text-[0.7rem] font-semibold transition",
+                              selectedStayDate === day
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "bg-background hover:border-primary/40",
+                            )}
+                          >
+                            {index + 1} · {formatDateShort(day)}
+                          </button>
+                        ))}
                       </div>
-                    ) : null}
-                  </div>
+                    </div>
+                  ) : null}
 
-                  <label className="space-y-2 text-sm font-medium">
-                    Bebida
-                    <select
-                      value={guestForm.drink}
-                      onChange={(event) =>
-                        setGuestForm((current) => ({
-                          ...current,
-                          drink: event.target.value,
-                        }))
-                      }
-                      className="h-11 w-full rounded-2xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    >
-                      {drinkOptions.map((drink) => (
-                        <option key={drink} value={drink}>
-                          {drink}
-                        </option>
+                  <div className="sm:col-span-2">
+                    <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Desayunos elegidos ese día
+                    </p>
+                    <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
+                      {stayDaySelections.map((item) => (
+                        <div
+                          key={item.id}
+                          className={cn(
+                            "flex items-center justify-between gap-2 rounded-xl border px-2.5 py-1.5 text-xs",
+                            item.status === "canjeado"
+                              ? "border-emerald-200 bg-emerald-50"
+                              : "border-amber-200 bg-amber-50",
+                          )}
+                        >
+                          <span className="truncate font-semibold">
+                            {breakfastLabel(item.type)}
+                            {item.drink ? ` · ${item.drink}` : ""}
+                          </span>
+                          <span className="shrink-0 text-[0.65rem] opacity-70">{item.source}</span>
+                        </div>
                       ))}
-                    </select>
-                  </label>
-
-                  <Textarea
-                    value={guestForm.notes}
-                    onChange={(event) =>
-                      setGuestForm((current) => ({
-                        ...current,
-                        notes: event.target.value,
-                      }))
-                    }
-                    className="min-h-24 rounded-2xl"
-                    placeholder="Observaciones: sin cebolla, sin azúcar, entregar después de las 8:30..."
-                  />
-
-                  <Button
-                    className="h-11 gap-2 rounded-full"
-                    onClick={confirmSelection}
-                    disabled={
-                      !selectedBreakfastType ||
-                      !selectedRoom?.reservation ||
-                      selectedRoomAllowance.availableToday <= 0 ||
-                      selectedRoomAllowance.availableTotal <= 0
-                    }
-                  >
-                    <BadgeCheck className="size-4" />
-                    Confirmar desayuno
-                  </Button>
+                      {stayDaySelections.length === 0 ? (
+                        <div className="rounded-xl border border-dashed px-2.5 py-2 text-center text-xs text-muted-foreground sm:col-span-2">
+                          Sin desayunos registrados ese día
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1630,7 +1843,8 @@ export function DesayunosPage() {
         </TabsContent>
 
         <TabsContent value="catalogo" className="space-y-4">
-          <section className="grid gap-4 2xl:grid-cols-[380px_1fr]">
+          <section className={cn("grid gap-4", isAdmin && "2xl:grid-cols-[380px_1fr]")}>
+            {isAdmin ? (
             <div ref={optionFormRef} className="rounded-3xl border bg-card p-5 shadow-sm">
               <div className="flex items-center gap-2">
                 {editingOptionId ? (
@@ -1787,6 +2001,7 @@ export function DesayunosPage() {
                 </div>
               </div>
             </div>
+            ) : null}
 
             <div className="rounded-3xl border bg-card p-5 shadow-sm">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
@@ -1815,34 +2030,36 @@ export function DesayunosPage() {
                         </p>
                         <h3 className="mt-1 text-lg font-bold">{option.label}</h3>
                       </div>
-                      <div className="flex gap-2">
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          className="rounded-full bg-background/70"
-                          onClick={() => editBreakfastOption(option)}
-                          title="Editar desayuno"
-                        >
-                          <Pencil className="size-4" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          className="rounded-full bg-background/70"
-                          onClick={() =>
-                            setPendingDialog({
-                              title: `Quitar ${option.label}`,
-                              description: "Esta opción dejará de aparecer para nuevos pedidos. Los pedidos o tickets anteriores conservarán su referencia histórica.",
-                              confirmLabel: "Sí, quitar",
-                              tone: "danger",
-                              onConfirm: () => deleteBreakfastOption(option),
-                            })
-                          }
-                          title="Quitar desayuno"
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
-                      </div>
+                      {isAdmin ? (
+                        <div className="flex gap-2">
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="rounded-full bg-background/70"
+                            onClick={() => editBreakfastOption(option)}
+                            title="Editar desayuno"
+                          >
+                            <Pencil className="size-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="rounded-full bg-background/70"
+                            onClick={() =>
+                              setPendingDialog({
+                                title: `Quitar ${option.label}`,
+                                description: "Esta opción dejará de aparecer para nuevos pedidos. Los pedidos o tickets anteriores conservarán su referencia histórica.",
+                                confirmLabel: "Sí, quitar",
+                                tone: "danger",
+                                onConfirm: () => deleteBreakfastOption(option),
+                              })
+                            }
+                            title="Quitar desayuno"
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
+                      ) : null}
                     </div>
                     <p className="mt-3 text-sm leading-6 opacity-80">
                       {option.description}
@@ -1863,121 +2080,192 @@ export function DesayunosPage() {
           </section>
         </TabsContent>
 
-        <TabsContent value="tickets" className="space-y-4">
+        <TabsContent value="ticketsFisicos" className="space-y-4">
+          <Tabs
+            value={ticketSubTab}
+            onValueChange={(value) => setTicketSubTab(value as TicketSubTab)}
+            className="space-y-4"
+          >
+            <TabsList className="flex h-auto flex-wrap justify-start rounded-2xl bg-muted/60 p-1">
+              <TabsTrigger value="crearTicket">Crear ticket físico</TabsTrigger>
+              <TabsTrigger value="gestionarTickets">Gestionar tickets físicos</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="crearTicket" className="space-y-4">
           <section className="rounded-3xl border bg-card p-5 shadow-sm">
             <div>
-              <h2 className="text-xl font-semibold">Tickets físicos del día</h2>
+              <h2 className="text-xl font-semibold">Crear ticket físico</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Para huéspedes que pidan apoyo en recepción o no usen el QR.
+                Para huéspedes que pidan apoyo en recepción o no usen el QR. Al crear un ticket,
+                se descuenta del mismo cupo de cortesía que el QR de la habitación.
               </p>
             </div>
 
-            <div className="mt-5 grid gap-4 2xl:grid-cols-[380px_1fr]">
+            <div className="mt-5 grid gap-4 2xl:grid-cols-[320px_1fr]">
               <div className="rounded-3xl border bg-background p-4">
-                <div className="flex items-center gap-2">
-                  <ClipboardCheck className="size-5 text-primary" />
-                  <h3 className="font-semibold">Asignar desde recepción</h3>
-                </div>
-                <div className="mt-4 grid gap-4">
-                  <label className="space-y-2 text-sm font-medium">
-                    Habitación o huésped
-                    <select
-                      value={selectedPhysicalRoom?.room.number ?? physicalTicketForm.roomNumber}
-                      onChange={(event) =>
-                        setPhysicalTicketForm((current) => ({
-                          ...current,
-                          roomNumber: event.target.value,
-                        }))
-                      }
-                      className="h-11 w-full rounded-2xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    >
-                      {roomDirectory
-                        .filter((item) => item.reservation)
-                        .map((item) => (
-                          <option key={item.room.id} value={item.room.number}>
-                            Habitación {item.room.number} · {item.guestName}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-
-                  <label className="space-y-2 text-sm font-medium">
-                    Desayuno
-                    <select
-                      value={selectedPhysicalBreakfastType}
-                      onChange={(event) =>
-                        setPhysicalTicketForm((current) => ({
-                          ...current,
-                          type: event.target.value,
-                        }))
-                      }
-                      className="h-11 w-full rounded-2xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    >
-                      {breakfastOptions.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <div className="rounded-2xl border bg-muted/20 p-3 text-sm">
-                    <p className="text-xs text-muted-foreground">Cupo de cortesía</p>
-                    <p className="mt-1 font-semibold">
-                      Hoy {selectedPhysicalAllowance.availableToday}/{selectedPhysicalAllowance.daily} - Estadia {selectedPhysicalAllowance.usedTotal}/{selectedPhysicalAllowance.total}
-                    </p>
-                  </div>
-
-                  <label className="space-y-2 text-sm font-medium">
-                    Bebida
-                    <select
-                      value={physicalTicketForm.drink}
-                      onChange={(event) =>
-                        setPhysicalTicketForm((current) => ({
-                          ...current,
-                          drink: event.target.value,
-                        }))
-                      }
-                      className="h-11 w-full rounded-2xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    >
-                      {drinkOptions.map((drink) => (
-                        <option key={drink} value={drink}>
-                          {drink}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <Textarea
-                    value={physicalTicketForm.notes}
-                    onChange={(event) =>
-                      setPhysicalTicketForm((current) => ({
-                        ...current,
-                        notes: event.target.value,
-                      }))
-                    }
-                    className="min-h-24 rounded-2xl"
-                    placeholder="Observaciones del huésped o recepción."
-                  />
-
-                  <Button
-                    className="gap-2 rounded-full"
-                    onClick={createPhysicalVoucher}
-                    disabled={
-                      !selectedPhysicalRoom ||
-                      !selectedPhysicalBreakfastType ||
-                      selectedPhysicalAllowance.availableToday <= 0 ||
-                      selectedPhysicalAllowance.availableTotal <= 0
-                    }
-                  >
-                    <Plus className="size-4" />
-                    Crear ticket físico
-                  </Button>
+                <h3 className="font-semibold">1. Elegir habitación</h3>
+                <div className="mt-3 grid gap-2">
+                  {roomDirectory
+                    .filter((item) => item.reservation)
+                    .map((item) => (
+                      <button
+                        key={item.room.id}
+                        type="button"
+                        onClick={() =>
+                          setPhysicalTicketForm((current) => ({
+                            ...current,
+                            roomNumber: item.room.number,
+                          }))
+                        }
+                        className={cn(
+                          "rounded-2xl border p-3 text-left transition hover:border-primary/40 hover:bg-primary/5",
+                          physicalTicketForm.roomNumber === item.room.number &&
+                            "border-primary bg-primary/10",
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-semibold">Habitación {item.room.number}</p>
+                            <p className="truncate text-sm text-muted-foreground">
+                              {item.guestName}
+                            </p>
+                          </div>
+                          <span
+                            className={cn(
+                              "shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold",
+                              item.allowance.availableToday <= 0
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                                : "border-amber-200 bg-amber-50 text-amber-800",
+                            )}
+                          >
+                            {item.allowance.availableToday}/{item.allowance.daily} hoy
+                          </span>
+                        </div>
+                      </button>
+                    ))}
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {breakfasts.map((breakfast) => (
+              <div className="rounded-3xl border bg-background p-4">
+                <div className="flex items-center gap-2">
+                  <ClipboardCheck className="size-5 text-primary" />
+                  <h3 className="font-semibold">2. Elegir desayuno del huésped</h3>
+                </div>
+
+                {!selectedPhysicalRoom ? (
+                  <div className="mt-6 rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                    Selecciona una habitación para continuar.
+                  </div>
+                ) : (
+                  <div className="mt-4 grid gap-4">
+                    <div className="rounded-2xl border bg-muted/20 p-3 text-sm">
+                      <p className="text-xs text-muted-foreground">
+                        Cupo de cortesía · Habitación {selectedPhysicalRoom.room.number}
+                      </p>
+                      <p className="mt-1 font-semibold">
+                        Hoy {selectedPhysicalAllowance.availableToday}/{selectedPhysicalAllowance.daily} · Estadía {selectedPhysicalAllowance.usedTotal}/{selectedPhysicalAllowance.total}
+                      </p>
+                    </div>
+
+                    <label className="space-y-2 text-sm font-medium">
+                      Desayuno
+                      <select
+                        value={selectedPhysicalBreakfastType}
+                        onChange={(event) =>
+                          setPhysicalTicketForm((current) => ({
+                            ...current,
+                            type: event.target.value,
+                          }))
+                        }
+                        className="h-11 w-full rounded-2xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      >
+                        {breakfastOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="space-y-2 text-sm font-medium">
+                      Bebida
+                      <select
+                        value={physicalTicketForm.drink}
+                        onChange={(event) =>
+                          setPhysicalTicketForm((current) => ({
+                            ...current,
+                            drink: event.target.value,
+                          }))
+                        }
+                        className="h-11 w-full rounded-2xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      >
+                        {drinkChoices.map((choice) => (
+                          <option key={choice.value} value={choice.value}>
+                            {choice.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <Textarea
+                      value={physicalTicketForm.notes}
+                      onChange={(event) =>
+                        setPhysicalTicketForm((current) => ({
+                          ...current,
+                          notes: event.target.value,
+                        }))
+                      }
+                      className="min-h-24 rounded-2xl"
+                      placeholder="Observaciones del huésped o recepción."
+                    />
+
+                    {selectedPhysicalAllowance.availableToday <= 0 ||
+                    selectedPhysicalAllowance.availableTotal <= 0 ? (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                        Esta habitación ya no tiene desayunos de cortesía disponibles.
+                      </div>
+                    ) : null}
+
+                    <Button
+                      className="gap-2 rounded-full"
+                      onClick={() => void createPhysicalTicket()}
+                      disabled={
+                        creatingTicket ||
+                        !selectedPhysicalBreakfastType ||
+                        selectedPhysicalAllowance.availableToday <= 0 ||
+                        selectedPhysicalAllowance.availableTotal <= 0
+                      }
+                    >
+                      {creatingTicket ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Plus className="size-4" />
+                      )}
+                      Crear ticket físico
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        </TabsContent>
+
+        <TabsContent value="gestionarTickets" className="space-y-4">
+          <section className="rounded-3xl border bg-card p-5 shadow-sm">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">Tickets físicos de hoy</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Solo se muestran los tickets físicos creados hoy. No aparecen en Pedidos QR.
+                </p>
+              </div>
+              <span className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                {breakfasts.length} tickets
+              </span>
+            </div>
+
+            <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {breakfasts.map((breakfast) => (
                 <article
                   key={breakfast.id}
                   className={cn(
@@ -2018,6 +2306,12 @@ export function DesayunosPage() {
                         {breakfastLabel(breakfast.type)}
                       </p>
                     </div>
+                    {breakfast.drink ? (
+                      <div className="rounded-2xl border bg-muted/20 p-3 text-sm">
+                        <p className="text-xs text-muted-foreground">Bebida</p>
+                        <p className="mt-1 font-semibold">{breakfast.drink}</p>
+                      </div>
+                    ) : null}
                     <div className="rounded-2xl border bg-muted/20 p-3 text-sm">
                       <p className="text-xs text-muted-foreground">Fecha</p>
                       <p className="mt-1 font-semibold">{formatDate(breakfast.date)}</p>
@@ -2038,17 +2332,31 @@ export function DesayunosPage() {
                   <Button
                     className="mt-4 w-full gap-2 rounded-full"
                     variant={breakfast.redeemed ? "outline" : "default"}
-                    disabled={breakfast.redeemed}
-                    onClick={() => redeemPhysicalVoucher(breakfast.id)}
+                    disabled={breakfast.redeemed || redeemingTicketId === breakfast.id}
+                    onClick={() => void redeemPhysicalTicket(breakfast.id)}
                   >
-                    <TicketCheck className="size-4" />
+                    {redeemingTicketId === breakfast.id ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <TicketCheck className="size-4" />
+                    )}
                     {breakfast.redeemed ? "Ya canjeado" : "Canjear ticket"}
                   </Button>
                 </article>
-                ))}
-              </div>
+              ))}
+
+              {breakfasts.length === 0 ? (
+                <div className="rounded-3xl border border-dashed p-10 text-center md:col-span-2 xl:col-span-3">
+                  <p className="font-semibold">Sin tickets físicos hoy</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Créalos desde la pestaña "Crear ticket físico".
+                  </p>
+                </div>
+              ) : null}
             </div>
           </section>
+            </TabsContent>
+          </Tabs>
         </TabsContent>
 
         <TabsContent value="backend" className="space-y-4">
