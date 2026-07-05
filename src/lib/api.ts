@@ -215,8 +215,9 @@ export interface CreateBreakfastSelectionFromQrModel {
   notes?: string | null
 }
 
-export interface UpdateBreakfastSelectionOptionModel {
+export interface UpdateBreakfastSelectionFromQrModel {
   id_breakfast_option?: number
+  beverage?: string | null
 }
 
 export interface CreateBreakfastVoucherModel {
@@ -991,13 +992,11 @@ export const api = {
       apiRequest<T>(`/api/breakfast/selections/${segment(id)}/restore`, {
         method: "PATCH",
       }),
-    // Endpoint aun no existe en el backend (pendiente de implementar). Se deja listo en el
-    // frontend para habilitar el boton "Modificar plato" en cuanto el backend lo publique.
-    updateSelectionOption: <T = unknown>(id: ApiId, body: UpdateBreakfastSelectionOptionModel) =>
-      apiRequest<T, UpdateBreakfastSelectionOptionModel>(
-        `/api/breakfast/selections/${segment(id)}/breakfast-option`,
+    updateSelectionFromQr: <T = unknown>(id: ApiId, body: UpdateBreakfastSelectionFromQrModel) =>
+      apiRequest<T, UpdateBreakfastSelectionFromQrModel>(
+        `/api/breakfast/selections/${segment(id)}/from-qr`,
         {
-          method: "PATCH",
+          method: "PUT",
           body,
         },
       ),

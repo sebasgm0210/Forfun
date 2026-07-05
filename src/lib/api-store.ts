@@ -198,7 +198,9 @@ export async function loadApiState(resources: BackendResource[] = API_RESOURCES)
   }
 
   if (shouldLoad("breakfastOptions") && isHydratableSource(breakfastOptionsData.source)) {
-    patch.breakfastOptions = toArray(breakfastOptionsData.data).map(mapBreakfastOption)
+    patch.breakfastOptions = sortBreakfastOptions(
+      toArray(breakfastOptionsData.data).map(mapBreakfastOption),
+    )
   }
 
   if (shouldLoad("breakfasts") && isHydratableSource(breakfastVouchersData.source)) {
@@ -516,21 +518,21 @@ export async function syncActionWithApi(action: Action, state: State): Promise<A
 
       case "BREAKFAST_OPTION_CREATE":
         await api.breakfast.createOption(breakfastOptionPayload(action.option))
-        return
+        return "breakfastOptions"
 
       case "BREAKFAST_OPTION_UPDATE": {
         const id = numericId(action.id)
         const option = state.breakfastOptions.find((item) => item.id === action.id)
         if (!id || !option) return
         await api.breakfast.updateOption(id, breakfastOptionPayload({ ...option, ...action.patch }))
-        return
+        return "breakfastOptions"
       }
 
       case "BREAKFAST_OPTION_DELETE": {
         const id = numericId(action.id)
         if (!id) return
         await api.breakfast.deleteOption(id)
-        return
+        return "breakfastOptions"
       }
 
       case "SALON_CREATE":
@@ -1224,7 +1226,8 @@ function mapPaymentStage(stage: string): PaymentRecord["stage"] {
 function mapBreakfastOption(item: unknown, index = 0): BreakfastOption {
   const record = toRecord(item)
   const id = pickId(record, ["id_breakfast_option", "idBreakfastOption", "id"])
-  const color = pickNumber(record, ["color", "display_order"], index + 1)
+  const color = pickNumber(record, ["color"], index + 1)
+  const displayOrder = pickNumber(record, ["display_order", "displayOrder"], index + 1)
   const accentIndex = Math.max(0, (color > 0 ? color - 1 : index) % BREAKFAST_ACCENTS.length)
 
   return {
@@ -1233,7 +1236,16 @@ function mapBreakfastOption(item: unknown, index = 0): BreakfastOption {
     description: pickString(record, ["description"], ""),
     accent: BREAKFAST_ACCENTS[accentIndex],
     imageUrl: pickOptionalString(record, ["image_url", "imageUrl", "photo_url", "photoUrl", "picture"]),
+    displayOrder,
   }
+}
+
+function sortBreakfastOptions(options: BreakfastOption[]) {
+  return [...options].sort((a, b) => {
+    const orderDiff = (a.displayOrder ?? 0) - (b.displayOrder ?? 0)
+    if (orderDiff !== 0) return orderDiff
+    return a.label.localeCompare(b.label, "es", { sensitivity: "base" })
+  })
 }
 
 function mapBreakfastVoucher(item: unknown, index = 0): BreakfastVoucher {
@@ -1765,7 +1777,7 @@ function breakfastOptionPayload(option: Partial<BreakfastOption>) {
     description: option.description,
     image_url: option.imageUrl,
     color,
-    display_order: color,
+    display_order: option.displayOrder ?? 1,
     is_active: true,
   }
 }
