@@ -96,6 +96,34 @@ type StayCharge = {
   status: string
   date: string
 }
+type PurchaseOrderLine = {
+  id: string
+  itemId: string
+  itemName: string
+  unitName: string
+  orderedQty: number
+  receivedQty: number
+  unitCost: number
+}
+type PurchaseOrder = {
+  id: string
+  category: string
+  supplierName: string
+  orderedBy: string
+  status: string
+  estimatedTotal: number
+  receivedTotal: number
+  orderedAt: string
+  receivedAt?: string
+  receivedBy?: string
+  notes?: string
+  items: PurchaseOrderLine[]
+}
+type PurchaseOrderDraftLine = {
+  itemId: string
+  qty: number
+  unitCost: number
+}
 type StaffOption = {
   name: string
   role: string
@@ -208,6 +236,44 @@ function mapStayCharge(value: unknown, index: number): StayCharge {
     amount: apiNumber(record, ["amount", "total", "total_amount", "price"]),
     status: apiText(record, ["status"], "Pendiente"),
     date: apiText(record, ["created_at", "createdAt", "date", "reviewed_at"], new Date().toISOString()),
+  }
+}
+
+function mapPurchaseOrder(value: unknown): PurchaseOrder | null {
+  const record = apiRecord(value)
+  const id = apiText(record, ["id_inventory_purchase_order", "idInventoryPurchaseOrder", "id"])
+  if (!id) return null
+
+  const items = apiArray(record.items).map((lineValue, index): PurchaseOrderLine => {
+    const line = apiRecord(lineValue)
+    return {
+      id: apiText(
+        line,
+        ["id_inventory_purchase_order_detail", "idInventoryPurchaseOrderDetail"],
+        `${id}-${index}`,
+      ),
+      itemId: apiText(line, ["id_inventory_item", "idInventoryItem"]),
+      itemName: apiText(line, ["item_name", "itemName"], "Producto"),
+      unitName: apiText(line, ["unit_name", "unitName"], "unidad"),
+      orderedQty: apiNumber(line, ["ordered_quantity", "orderedQuantity"]),
+      receivedQty: apiNumber(line, ["received_quantity", "receivedQuantity"]),
+      unitCost: apiNumber(line, ["unit_cost", "unitCost"]),
+    }
+  })
+
+  return {
+    id,
+    category: apiText(record, ["category"], "snack"),
+    supplierName: apiText(record, ["supplier_name", "supplierName"], "Sin proveedor"),
+    orderedBy: apiText(record, ["ordered_by", "orderedBy"], "-"),
+    status: apiText(record, ["status"], "Ordenado"),
+    estimatedTotal: apiNumber(record, ["estimated_total", "estimatedTotal"]),
+    receivedTotal: apiNumber(record, ["received_total", "receivedTotal"]),
+    orderedAt: apiText(record, ["ordered_at", "orderedAt"], new Date().toISOString()),
+    receivedAt: apiText(record, ["received_at", "receivedAt"]) || undefined,
+    receivedBy: apiText(record, ["received_by", "receivedBy"]) || undefined,
+    notes: apiText(record, ["notes"]) || undefined,
+    items,
   }
 }
 
@@ -400,6 +466,16 @@ export function InventarioSnacksPage() {
   const [productSaving, setProductSaving] = useState(false)
   const [stockSaving, setStockSaving] = useState(false)
   const [cardFeedback, setCardFeedback] = useState<CardFeedback>({})
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([])
+  const [poSupplier, setPoSupplier] = useState("")
+  const [poNotes, setPoNotes] = useState("")
+  const [poDraftItemId, setPoDraftItemId] = useState("")
+  const [poDraftQty, setPoDraftQty] = useState(1)
+  const [poDraftLines, setPoDraftLines] = useState<PurchaseOrderDraftLine[]>([])
+  const [poSaving, setPoSaving] = useState(false)
+  const [receivingOrder, setReceivingOrder] = useState<PurchaseOrder | null>(null)
+  const [receiveQuantities, setReceiveQuantities] = useState<Record<string, number>>({})
+  const [receivingSaving, setReceivingSaving] = useState(false)
 
   const roomOptions = useMemo(
     () =>
@@ -626,6 +702,21 @@ export function InventarioSnacksPage() {
     }
   }, [])
 
+  const loadPurchaseOrders = useCallback(async () => {
+    try {
+      const response = await api.inventory.listPurchaseOrders<unknown>({ category: "snack" })
+      setPurchaseOrders(
+        apiArray(response)
+          .map(mapPurchaseOrder)
+          .filter((order): order is PurchaseOrder => Boolean(order)),
+      )
+    } catch (error) {
+      toast.error("No se pudieron cargar las ordenes de compra", {
+        description: getApiErrorMessage(error),
+      })
+    }
+  }, [])
+
   useEffect(() => {
     void Promise.all([
       refreshApiState(
@@ -640,8 +731,9 @@ export function InventarioSnacksPage() {
         { force: false },
       ),
       loadMinibarData(),
+      loadPurchaseOrders(),
     ])
-  }, [loadMinibarData, refreshApiState])
+  }, [loadMinibarData, loadPurchaseOrders, refreshApiState])
 
   const openCreateProduct = () => {
     setEditingItemId(null)
@@ -799,7 +891,7 @@ export function InventarioSnacksPage() {
       await api.inventory.configureRoomMinibar(roomId, { items: payloadItems })
       setConfiguredMiniBars((current) => ({ ...current, [selectedRoom]: true }))
       showCardFeedback(`config-${selectedRoom}`, "Configuración guardada")
-      await loadMinibarData()
+      await Promise.all([loadMinibarData(), refreshApiState(["inventory"], { force: true })])
       toast.success(`Minibar configurado para habitación ${selectedRoom}`)
     } catch (error) {
       toast.error("No se pudo configurar el minibar", {
@@ -916,7 +1008,7 @@ export function InventarioSnacksPage() {
         ],
       })
       showCardFeedback(`restock-${roomNumber}`, "Reposicion registrada con exito")
-      await loadMinibarData()
+      await Promise.all([loadMinibarData(), refreshApiState(["inventory"], { force: true })])
       toast.success(`Reposicion registrada para habitacion ${roomNumber}`, {
         description: item.name,
       })
@@ -950,7 +1042,7 @@ export function InventarioSnacksPage() {
           .filter((item) => Number.isFinite(item.id_inventory_item) && item.quantity > 0),
       })
       showCardFeedback(`restock-${roomNumber}`, "Minibar completo con exito")
-      await loadMinibarData()
+      await Promise.all([loadMinibarData(), refreshApiState(["inventory"], { force: true })])
       toast.success(`Minibar de habitacion ${roomNumber} completo`)
     } catch (error) {
       toast.error("No se pudo completar la reposición", {
@@ -990,6 +1082,117 @@ export function InventarioSnacksPage() {
     }
   }
 
+  const addPurchaseOrderDraftLine = () => {
+    const item = items.find((candidate) => candidate.id === poDraftItemId)
+    if (!item || poDraftQty <= 0) {
+      toast.error("Elige producto y cantidad")
+      return
+    }
+    if (poDraftLines.some((line) => line.itemId === item.id)) {
+      toast.error("Ese producto ya esta en la orden")
+      return
+    }
+    setPoDraftLines((current) => [
+      ...current,
+      { itemId: item.id, qty: Math.max(1, Math.floor(poDraftQty)), unitCost: item.cost },
+    ])
+    setPoDraftItemId("")
+    setPoDraftQty(1)
+  }
+
+  const removePurchaseOrderDraftLine = (itemId: string) => {
+    setPoDraftLines((current) => current.filter((line) => line.itemId !== itemId))
+  }
+
+  const createPurchaseOrderHandler = async () => {
+    if (!poDraftLines.length || poSaving) {
+      toast.error("Agrega al menos un producto a la orden")
+      return
+    }
+    if (!poSupplier.trim()) {
+      toast.error("Indica el proveedor")
+      return
+    }
+
+    const detailItems = poDraftLines.map((line) => ({
+      id_inventory_item: backendNumericId(line.itemId, "Producto") ?? undefined,
+      ordered_quantity: line.qty,
+      unit_cost: line.unitCost,
+    }))
+    if (detailItems.some((line) => !line.id_inventory_item)) return
+
+    setPoSaving(true)
+    try {
+      await api.inventory.createPurchaseOrder({
+        category: "snack",
+        supplier_name: poSupplier.trim(),
+        ordered_by: "Inventario",
+        notes: poNotes.trim() || null,
+        items: detailItems,
+      })
+      await loadPurchaseOrders()
+      toast.success("Orden de compra creada")
+      setPoDraftLines([])
+      setPoSupplier("")
+      setPoNotes("")
+    } catch (error) {
+      toast.error("No se pudo crear la orden de compra", {
+        description: getApiErrorMessage(error),
+      })
+    } finally {
+      setPoSaving(false)
+    }
+  }
+
+  const openReceivePurchaseOrder = (order: PurchaseOrder) => {
+    setReceivingOrder(order)
+    setReceiveQuantities(
+      Object.fromEntries(
+        order.items.map((line) => [line.id, Math.max(0, line.orderedQty - line.receivedQty)]),
+      ),
+    )
+  }
+
+  const receivePurchaseOrderHandler = async () => {
+    if (!receivingOrder || receivingSaving) return
+
+    const orderId = backendNumericId(receivingOrder.id, "Orden de compra")
+    if (!orderId) return
+
+    const lines = receivingOrder.items
+      .map((line) => ({
+        id_inventory_purchase_order_detail: backendNumericId(line.id, "Producto de la orden") ?? undefined,
+        received_quantity: Math.max(0, Math.floor(receiveQuantities[line.id] ?? 0)),
+      }))
+      .filter(
+        (line): line is { id_inventory_purchase_order_detail: number; received_quantity: number } =>
+          Boolean(line.id_inventory_purchase_order_detail) && line.received_quantity > 0,
+      )
+
+    if (!lines.length) {
+      toast.error("Indica cuanto llego de cada producto")
+      return
+    }
+
+    setReceivingSaving(true)
+    try {
+      await api.inventory.receivePurchaseOrder(orderId, {
+        received_by: "Inventario",
+        notes: null,
+        items: lines,
+      })
+      await Promise.all([loadPurchaseOrders(), refreshApiState(["inventory"], { force: true })])
+      toast.success("Recepcion de mercaderia registrada")
+      setReceivingOrder(null)
+      setReceiveQuantities({})
+    } catch (error) {
+      toast.error("No se pudo registrar la recepcion", {
+        description: getApiErrorMessage(error),
+      })
+    } finally {
+      setReceivingSaving(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -1115,6 +1318,7 @@ export function InventarioSnacksPage() {
           <TabsTrigger value="revisar">Revisar cuarto</TabsTrigger>
           <TabsTrigger value="reposicion">Reposicion minibar</TabsTrigger>
           <TabsTrigger value="productos">Productos</TabsTrigger>
+          <TabsTrigger value="compras">Compras</TabsTrigger>
           <TabsTrigger value="historial">Registro</TabsTrigger>
         </TabsList>
 
@@ -1604,6 +1808,162 @@ export function InventarioSnacksPage() {
           </section>
         </TabsContent>
 
+        <TabsContent value="compras" className="space-y-4">
+          <section className="grid gap-4 2xl:grid-cols-[1fr_380px]">
+            <SectionCard
+              title="Ordenes de compra"
+              description="Historial de pedidos a proveedor y su estado de recepcion."
+            >
+              <div className="space-y-3">
+                {purchaseOrders.map((order) => {
+                  const isReceived = order.status.toLowerCase().includes("recib") && order.receivedTotal >= order.estimatedTotal
+                  return (
+                    <article key={order.id} className="rounded-3xl border bg-background/70 p-4 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h3 className="font-semibold">{order.supplierName}</h3>
+                          <p className="text-sm text-muted-foreground">
+                            {formatDate(order.orderedAt)} · Pedido por {order.orderedBy}
+                          </p>
+                        </div>
+                        <StatusPill tone={isReceived ? "success" : "warning"}>{order.status}</StatusPill>
+                      </div>
+
+                      <div className="mt-3 space-y-1">
+                        {order.items.map((line) => (
+                          <div key={line.id} className="flex items-center justify-between gap-3 rounded-2xl bg-muted/45 px-3 py-2 text-sm">
+                            <span>{line.orderedQty} {line.unitName} x {line.itemName}</span>
+                            <span className="text-muted-foreground">
+                              recibido {line.receivedQty}/{line.orderedQty}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-3 flex items-center justify-between rounded-2xl bg-primary/10 p-3 text-primary">
+                        <span className="text-sm font-semibold">Total estimado</span>
+                        <span className="text-xl font-bold">{money(order.estimatedTotal)}</span>
+                      </div>
+
+                      {!isReceived ? (
+                        <div className="mt-3 flex justify-end">
+                          <Button className="gap-2 rounded-full" onClick={() => openReceivePurchaseOrder(order)}>
+                            <PackagePlus className="size-4" />
+                            Recibir mercaderia
+                          </Button>
+                        </div>
+                      ) : null}
+                    </article>
+                  )
+                })}
+
+                {!purchaseOrders.length ? (
+                  <div className="rounded-3xl border border-dashed bg-muted/20 p-8 text-center text-sm text-muted-foreground">
+                    No hay ordenes de compra registradas.
+                  </div>
+                ) : null}
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Nueva orden de compra" description="Registra un pedido nuevo a proveedor.">
+              <div className="space-y-3">
+                <label className="space-y-2 text-sm font-medium">
+                  Proveedor
+                  <Input
+                    value={poSupplier}
+                    onChange={(event) => setPoSupplier(event.target.value)}
+                    placeholder="Nombre del proveedor"
+                    className="rounded-full"
+                  />
+                </label>
+
+                <label className="space-y-2 text-sm font-medium">
+                  Notas
+                  <Input
+                    value={poNotes}
+                    onChange={(event) => setPoNotes(event.target.value)}
+                    placeholder="Opcional"
+                    className="rounded-full"
+                  />
+                </label>
+
+                <div className="grid grid-cols-[1fr_5rem] gap-2">
+                  <label className="space-y-2 text-sm font-medium">
+                    Producto
+                    <select
+                      value={poDraftItemId}
+                      onChange={(event) => setPoDraftItemId(event.target.value)}
+                      className="h-10 w-full rounded-full border bg-background px-3 text-sm"
+                    >
+                      <option value="">Elige un producto</option>
+                      {items.map((item) => (
+                        <option key={item.id} value={item.id}>{item.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-2 text-sm font-medium">
+                    Cant.
+                    <Input
+                      type="number"
+                      min={1}
+                      value={poDraftQty}
+                      onChange={(event) => setPoDraftQty(Number(event.target.value) || 1)}
+                      className="rounded-full"
+                    />
+                  </label>
+                </div>
+
+                <Button variant="outline" className="w-full gap-2 rounded-full" onClick={addPurchaseOrderDraftLine}>
+                  <Plus className="size-4" />
+                  Agregar producto a la orden
+                </Button>
+
+                <div className="space-y-2">
+                  {poDraftLines.map((line) => {
+                    const item = items.find((candidate) => candidate.id === line.itemId)
+                    return (
+                      <div key={line.itemId} className="flex items-center justify-between gap-3 rounded-2xl bg-muted/45 px-3 py-2 text-sm">
+                        <span>{line.qty} x {item?.name ?? "Producto"}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-muted-foreground">{money(line.qty * line.unitCost)}</span>
+                          <button
+                            type="button"
+                            onClick={() => removePurchaseOrderDraftLine(line.itemId)}
+                            className="text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {!poDraftLines.length ? (
+                    <p className="rounded-2xl border border-dashed bg-muted/20 p-3 text-center text-xs text-muted-foreground">
+                      Agrega productos para armar la orden.
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="flex items-center justify-between rounded-2xl bg-primary/10 p-3 text-primary">
+                  <span className="text-sm font-semibold">Total estimado</span>
+                  <span className="text-xl font-bold">
+                    {money(poDraftLines.reduce((sum, line) => sum + line.qty * line.unitCost, 0))}
+                  </span>
+                </div>
+
+                <Button
+                  className="w-full gap-2 rounded-full"
+                  onClick={createPurchaseOrderHandler}
+                  disabled={poSaving || !poDraftLines.length}
+                >
+                  <Save className="size-4" />
+                  Crear orden de compra
+                </Button>
+              </div>
+            </SectionCard>
+          </section>
+        </TabsContent>
+
         <TabsContent value="historial">
           <section className="grid gap-4 2xl:grid-cols-[1fr_360px]">
             <SectionCard title="Registro reciente" description="Aqui queda lo que recepcion cargo y lo que se sumo a bodega.">
@@ -1850,6 +2210,61 @@ export function InventarioSnacksPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={Boolean(receivingOrder)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReceivingOrder(null)
+            setReceiveQuantities({})
+          }
+        }}
+      >
+        <DialogContent className="max-h-[92vh] overflow-y-auto rounded-3xl sm:max-w-lg">
+          <DialogHeader className="text-left">
+            <DialogTitle>Recibir mercaderia</DialogTitle>
+            <DialogDescription>
+              Confirma cuanto llego de {receivingOrder?.supplierName}. El stock de bodega se actualiza al guardar.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {receivingOrder?.items.map((line) => (
+              <div key={line.id} className="flex items-center justify-between gap-3 rounded-2xl border bg-background/60 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{line.itemName}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Pedido {line.orderedQty} {line.unitName} · recibido {line.receivedQty}
+                  </p>
+                </div>
+                <Input
+                  type="number"
+                  min={0}
+                  max={Math.max(0, line.orderedQty - line.receivedQty)}
+                  value={receiveQuantities[line.id] ?? 0}
+                  onChange={(event) =>
+                    setReceiveQuantities((current) => ({
+                      ...current,
+                      [line.id]: Math.max(0, Number(event.target.value) || 0),
+                    }))
+                  }
+                  className="w-24 rounded-full text-right"
+                />
+              </div>
+            ))}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" className="rounded-full" onClick={() => setReceivingOrder(null)}>
+              Cancelar
+            </Button>
+            <Button className="gap-2 rounded-full" onClick={receivePurchaseOrderHandler} disabled={receivingSaving}>
+              <CheckCircle2 className="size-4" />
+              Confirmar recepcion
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
