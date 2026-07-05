@@ -595,6 +595,10 @@ export function DesayunosPage() {
   }, [refreshApiState])
 
   useEffect(() => {
+    if (!isAdmin && activeTab === "backend") setActiveTab("pedidos")
+  }, [isAdmin, activeTab])
+
+  useEffect(() => {
     loadDailyReport().catch((error) => {
       setDailyReportMetrics([])
       toast.error("No se pudo cargar el reporte diario de desayunos", {
@@ -1346,7 +1350,7 @@ export function DesayunosPage() {
           <TabsTrigger value="vistaQr">Vista pública</TabsTrigger>
           <TabsTrigger value="catalogo">Desayunos disponibles</TabsTrigger>
           <TabsTrigger value="ticketsFisicos">Tickets físicos</TabsTrigger>
-          <TabsTrigger value="backend">Servidor</TabsTrigger>
+          {isAdmin ? <TabsTrigger value="backend">Servidor</TabsTrigger> : null}
         </TabsList>
 
         <TabsContent value="pedidos" className="space-y-4">
@@ -2360,6 +2364,7 @@ export function DesayunosPage() {
         </TabsContent>
 
         <TabsContent value="backend" className="space-y-4">
+          {isAdmin ? (
           <section className="rounded-3xl border bg-card p-5 shadow-sm">
             <h2 className="text-xl font-semibold">Endpoints para Desayunos QR</h2>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -2393,6 +2398,7 @@ export function DesayunosPage() {
               ))}
             </div>
           </section>
+          ) : null}
         </TabsContent>
       </Tabs>
 
