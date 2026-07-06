@@ -3,6 +3,8 @@ import {
   BadgeCheck,
   BedDouble,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ClipboardCheck,
   Clock3,
   Coffee,
@@ -483,18 +485,20 @@ function BreakfastOptionPhoto({
 }) {
   if (option.imageUrl) {
     return (
-      <img
-        src={option.imageUrl}
-        alt={option.label}
-        className={cn("h-28 w-full rounded-2xl object-cover", className)}
-      />
+      <div className={cn("aspect-[4/3] w-full overflow-hidden rounded-2xl bg-muted/20", className)}>
+        <img
+          src={option.imageUrl}
+          alt={option.label}
+          className="size-full object-cover object-center"
+        />
+      </div>
     )
   }
 
   return (
     <div
       className={cn(
-        "grid h-28 w-full place-items-center rounded-2xl border bg-gradient-to-br from-amber-50 via-white to-emerald-50 text-primary",
+        "grid aspect-[4/3] w-full place-items-center rounded-2xl border bg-gradient-to-br from-amber-50 via-white to-emerald-50 text-primary",
         className,
       )}
     >
@@ -535,6 +539,7 @@ export function DesayunosPage() {
   const [creatingTicket, setCreatingTicket] = useState(false)
   const [redeemingTicketId, setRedeemingTicketId] = useState<string | null>(null)
   const [editingOptionId, setEditingOptionId] = useState<string | null>(null)
+  const [catalogPage, setCatalogPage] = useState(0)
   const [pendingDialog, setPendingDialog] = useState<PendingDialog>(null)
   const optionFormRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
@@ -543,11 +548,13 @@ export function DesayunosPage() {
     description: "",
     imageUrl: "",
     accent: breakfastAccents[0],
+    displayOrder: "1",
   })
   const [roomQrSummaries, setRoomQrSummaries] = useState<BreakfastRoomQrSummary[]>([])
   const [qrSelections, setQrSelections] = useState<BreakfastSelection[]>([])
   const [editingDishSelectionId, setEditingDishSelectionId] = useState<string | null>(null)
   const [editingDishOptionId, setEditingDishOptionId] = useState("")
+  const [editingDishDrink, setEditingDishDrink] = useState("")
   const [savingDishChange, setSavingDishChange] = useState(false)
   const [dailyReportMetrics, setDailyReportMetrics] = useState<BreakfastDailyReportMetric[]>([])
   const [refreshingBreakfast, setRefreshingBreakfast] = useState(false)
@@ -578,6 +585,7 @@ export function DesayunosPage() {
       loadRoomQrSummaries(),
       reloadTodaySelections(),
       loadDailyReport(),
+      refreshApiState(["breakfasts"], { force: true }),
     ])
     setRefreshingBreakfast(false)
     if (results.some((result) => result.status === "rejected")) {
@@ -593,6 +601,10 @@ export function DesayunosPage() {
       { force: true },
     )
   }, [refreshApiState])
+
+  useEffect(() => {
+    if (!isAdmin && activeTab === "backend") setActiveTab("pedidos")
+  }, [isAdmin, activeTab])
 
   useEffect(() => {
     loadDailyReport().catch((error) => {
@@ -636,6 +648,13 @@ export function DesayunosPage() {
   }, [breakfastOptions])
 
   const firstBreakfastOption = breakfastOptions[0]
+  const CATALOG_PAGE_SIZE = 4
+  const catalogTotalPages = Math.max(1, Math.ceil(breakfastOptions.length / CATALOG_PAGE_SIZE))
+  const safeCatalogPage = Math.min(catalogPage, catalogTotalPages - 1)
+  const catalogPageOptions = breakfastOptions.slice(
+    safeCatalogPage * CATALOG_PAGE_SIZE,
+    safeCatalogPage * CATALOG_PAGE_SIZE + CATALOG_PAGE_SIZE,
+  )
   const selectedPhysicalBreakfastType = breakfastOptions.some(
     (option) => option.id === physicalTicketForm.type,
   )
@@ -917,7 +936,7 @@ export function DesayunosPage() {
     if (!selection || selection.status === "canjeado") return
 
     try {
-      await api.breakfast.redeemSelection(id, { redeemed_by: "Recepción" })
+      await api.breakfast.redeemSelection(id, { redeemed_by: currentUser?.name ?? "Recepción" })
       setQrSelections((current) =>
         current.map((item) =>
           item.id === id
@@ -961,11 +980,13 @@ export function DesayunosPage() {
   function startEditDish(selection: BreakfastSelection) {
     setEditingDishSelectionId(selection.id)
     setEditingDishOptionId(selection.type)
+    setEditingDishDrink(selection.drink)
   }
 
   function cancelEditDish() {
     setEditingDishSelectionId(null)
     setEditingDishOptionId("")
+    setEditingDishDrink("")
   }
 
   async function saveDishChange(id: string) {
@@ -977,10 +998,13 @@ export function DesayunosPage() {
 
     setSavingDishChange(true)
     try {
-      await api.breakfast.updateSelectionOption(id, { id_breakfast_option: optionId })
+      await api.breakfast.updateSelectionFromQr(id, {
+        id_breakfast_option: optionId,
+        beverage: editingDishDrink,
+      })
       setQrSelections((current) =>
         current.map((item) =>
-          item.id === id ? { ...item, type: editingDishOptionId } : item,
+          item.id === id ? { ...item, type: editingDishOptionId, drink: editingDishDrink } : item,
         ),
       )
       toast.success("Plato actualizado")
@@ -1123,6 +1147,7 @@ export function DesayunosPage() {
       description: "",
       imageUrl: "",
       accent: breakfastAccents[0],
+      displayOrder: "1",
     })
   }
 
@@ -1149,6 +1174,8 @@ export function DesayunosPage() {
     const label = optionForm.label.trim()
     const description = optionForm.description.trim()
     const imageUrl = optionForm.imageUrl.trim()
+    const parsedDisplayOrder = Number(optionForm.displayOrder)
+    const displayOrder = Number.isFinite(parsedDisplayOrder) ? parsedDisplayOrder : 1
     if (!label || !description) {
       toast.error("Completa el nombre y la descripcion del desayuno")
       return
@@ -1158,7 +1185,7 @@ export function DesayunosPage() {
       dispatch({
         type: "BREAKFAST_OPTION_UPDATE",
         id: editingOptionId,
-        patch: { label, description, imageUrl, accent: optionForm.accent },
+        patch: { label, description, imageUrl, accent: optionForm.accent, displayOrder },
       })
       toast.success("Desayuno actualizado", { description: label })
       resetOptionForm()
@@ -1172,10 +1199,11 @@ export function DesayunosPage() {
       : baseId
     dispatch({
       type: "BREAKFAST_OPTION_CREATE",
-      option: { id, label, description, imageUrl, accent: optionForm.accent },
+      option: { id, label, description, imageUrl, accent: optionForm.accent, displayOrder },
     })
     toast.success("Desayuno agregado", { description: label })
     resetOptionForm()
+    setCatalogPage(0)
   }
 
   function editBreakfastOption(option: BreakfastOption) {
@@ -1185,6 +1213,7 @@ export function DesayunosPage() {
       description: option.description,
       imageUrl: option.imageUrl ?? "",
       accent: option.accent,
+      displayOrder: String(option.displayOrder ?? 1),
     })
     setActiveTab("catalogo")
     window.setTimeout(() => {
@@ -1346,7 +1375,7 @@ export function DesayunosPage() {
           <TabsTrigger value="vistaQr">Vista pública</TabsTrigger>
           <TabsTrigger value="catalogo">Desayunos disponibles</TabsTrigger>
           <TabsTrigger value="ticketsFisicos">Tickets físicos</TabsTrigger>
-          <TabsTrigger value="backend">Servidor</TabsTrigger>
+          {isAdmin ? <TabsTrigger value="backend">Servidor</TabsTrigger> : null}
         </TabsList>
 
         <TabsContent value="pedidos" className="space-y-4">
@@ -1473,6 +1502,17 @@ export function DesayunosPage() {
                               {breakfastOptions.map((option) => (
                                 <option key={option.id} value={option.id}>
                                   {option.label}
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              value={editingDishDrink}
+                              onChange={(event) => setEditingDishDrink(event.target.value)}
+                              className="h-10 min-w-32 rounded-xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                            >
+                              {drinkChoices.map((choice) => (
+                                <option key={choice.value} value={choice.value}>
+                                  {choice.label}
                                 </option>
                               ))}
                             </select>
@@ -1874,6 +1914,27 @@ export function DesayunosPage() {
                 </label>
 
                 <label className="space-y-2 text-sm font-medium">
+                  Orden
+                  <Input
+                    type="number"
+                    min={1}
+                    value={optionForm.displayOrder}
+                    onChange={(event) =>
+                      setOptionForm((current) => ({
+                        ...current,
+                        displayOrder: event.target.value,
+                      }))
+                    }
+                    className="rounded-2xl"
+                    placeholder="1"
+                  />
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    Define el orden en que aparece para el huésped. Si dos desayunos comparten el
+                    mismo número, se ordenan alfabéticamente.
+                  </span>
+                </label>
+
+                <label className="space-y-2 text-sm font-medium">
                   Descripción
                   <Textarea
                     value={optionForm.description}
@@ -1906,7 +1967,7 @@ export function DesayunosPage() {
                       <img
                         src={optionForm.imageUrl}
                         alt="Vista previa del desayuno"
-                        className="h-28 w-full rounded-xl object-cover"
+                        className="aspect-[4/3] w-full rounded-xl object-cover object-center"
                       />
                     ) : (
                       <>
@@ -2017,7 +2078,7 @@ export function DesayunosPage() {
               </div>
 
               <div className="mt-5 grid gap-3 md:grid-cols-2">
-                {breakfastOptions.map((option) => (
+                {catalogPageOptions.map((option) => (
                   <article
                     key={option.id}
                     className={cn("rounded-3xl border p-4", option.accent)}
@@ -2076,6 +2137,36 @@ export function DesayunosPage() {
                   </div>
                 ) : null}
               </div>
+
+              {catalogTotalPages > 1 ? (
+                <div className="mt-5 flex items-center justify-between gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 rounded-full"
+                    onClick={() => setCatalogPage((page) => Math.max(0, page - 1))}
+                    disabled={safeCatalogPage === 0}
+                  >
+                    <ChevronLeft className="size-4" />
+                    Anterior
+                  </Button>
+                  <p className="text-sm text-muted-foreground">
+                    Página {safeCatalogPage + 1} de {catalogTotalPages}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 rounded-full"
+                    onClick={() =>
+                      setCatalogPage((page) => Math.min(catalogTotalPages - 1, page + 1))
+                    }
+                    disabled={safeCatalogPage >= catalogTotalPages - 1}
+                  >
+                    Siguiente
+                    <ChevronRight className="size-4" />
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </section>
         </TabsContent>
@@ -2360,6 +2451,7 @@ export function DesayunosPage() {
         </TabsContent>
 
         <TabsContent value="backend" className="space-y-4">
+          {isAdmin ? (
           <section className="rounded-3xl border bg-card p-5 shadow-sm">
             <h2 className="text-xl font-semibold">Endpoints para Desayunos QR</h2>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -2376,12 +2468,13 @@ export function DesayunosPage() {
                 ["POST", "/api/breakfast/selections/from-qr", "Crear selección desde el QR público validando que breakfastOptionId exista y esté activo, sin exponer datos internos."],
                 ["PATCH", "/api/breakfast/selections/{id}/redeem", "Marcar pedido QR como canjeado y guardar hora/usuario que lo validó."],
                 ["PATCH", "/api/breakfast/selections/{id}/restore", "Devolver un pedido canjeado a recibido cuando se marcó por error."],
+                ["PUT", "/api/breakfast/selections/{id}/from-qr", "Modificar el plato y/o la bebida de un pedido ya recibido, antes de que se prepare (botón \"Modificar plato\" en Pedidos QR)."],
                 ["GET", "/api/breakfast/vouchers/today", "Tickets físicos del día para huéspedes que no usen el QR."],
                 ["POST", "/api/breakfast/vouchers", "Crear ticket físico desde recepción usando reserva/habitación, huésped, fecha, breakfastOptionId, bebida y notas."],
                 ["PATCH", "/api/breakfast/vouchers/{id}/redeem", "Canjear ticket físico y guardar hora."],
                 ["GET", "/api/breakfast/reports/daily", "Resumen diario por tipo de desayuno, habitación y estado para cocina/gerencia."],
               ].map(([method, endpoint, description]) => (
-                <div key={endpoint} className="rounded-2xl border bg-background p-4">
+                <div key={`${method} ${endpoint}`} className="rounded-2xl border bg-background p-4">
                   <div className="flex items-center gap-2">
                     <span className="rounded-full bg-primary px-2.5 py-1 text-xs font-bold text-primary-foreground">
                       {method}
@@ -2393,6 +2486,7 @@ export function DesayunosPage() {
               ))}
             </div>
           </section>
+          ) : null}
         </TabsContent>
       </Tabs>
 

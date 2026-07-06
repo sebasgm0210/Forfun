@@ -220,6 +220,7 @@ export interface BreakfastOption {
   description: string
   accent: string
   imageUrl?: string
+  displayOrder?: number
 }
 
 export interface BreakfastVoucher {

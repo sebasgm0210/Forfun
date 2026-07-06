@@ -1,9 +1,27 @@
 import { useEffect, useMemo, useState } from "react"
 import { useParams } from "react-router-dom"
-import { BadgeCheck, Check, Clock3, Coffee, Loader2, MessageSquareText, Utensils } from "lucide-react"
+import {
+  ArrowLeft,
+  ArrowRight,
+  BadgeCheck,
+  Check,
+  Clock3,
+  Coffee,
+  Loader2,
+  MessageSquareText,
+  Utensils,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import {
+  Carousel,
+  CarouselContent,
+  CarouselItem,
+  CarouselNext,
+  CarouselPrevious,
+  type CarouselApi,
+} from "@/components/ui/carousel"
 import { Textarea } from "@/components/ui/textarea"
 import { api, getApiErrorMessage } from "@/lib/api"
 import { roomNumberFromQrCode } from "@/lib/breakfast-qr"
@@ -217,6 +235,7 @@ export default function DesayunoQrPage() {
   const [sentIndices, setSentIndices] = useState<Set<number>>(new Set())
   const [activeIndex, setActiveIndex] = useState(0)
   const [justCompletedNow, setJustCompletedNow] = useState(false)
+  const [optionsCarouselApi, setOptionsCarouselApi] = useState<CarouselApi>()
   const outsideHours = ENFORCE_BREAKFAST_HOURS && !isWithinBreakfastHours()
   const options = serverOptions.length ? serverOptions : breakfastOptions
   const firstOption = options[0]
@@ -343,6 +362,41 @@ export default function DesayunoQrPage() {
   const canAct = Boolean(
     qrCode && qrFound && cartInitialized && activeDraft && !submitting && drafts.length > 0,
   )
+
+  useEffect(() => {
+    if (!optionsCarouselApi) return
+    const index = options.findIndex((option) => option.id === activeDraft?.type)
+    optionsCarouselApi.scrollTo(index >= 0 ? index : 0, true)
+  }, [optionsCarouselApi, activeIndex])
+
+  const [canScrollPrevOption, setCanScrollPrevOption] = useState(false)
+  const [canScrollNextOption, setCanScrollNextOption] = useState(false)
+  const [currentOptionSlide, setCurrentOptionSlide] = useState(0)
+
+  useEffect(() => {
+    if (!optionsCarouselApi) return
+    const onSelect = () => {
+      setCanScrollPrevOption(optionsCarouselApi.canScrollPrev())
+      setCanScrollNextOption(optionsCarouselApi.canScrollNext())
+      const snap = optionsCarouselApi.selectedScrollSnap()
+      setCurrentOptionSlide(snap)
+      const option = options[snap]
+      if (option) {
+        setDrafts((current) =>
+          current.map((draft, index) =>
+            index === activeIndex ? { ...draft, type: option.id } : draft,
+          ),
+        )
+      }
+    }
+    onSelect()
+    optionsCarouselApi.on("select", onSelect)
+    optionsCarouselApi.on("reInit", onSelect)
+    return () => {
+      optionsCarouselApi.off("select", onSelect)
+      optionsCarouselApi.off("reInit", onSelect)
+    }
+  }, [optionsCarouselApi, activeIndex, options])
 
   function updateActiveDraft(patch: Partial<DraftOrder>) {
     setDrafts((current) =>
@@ -547,30 +601,65 @@ export default function DesayunoQrPage() {
                 </div>
               </div>
             ) : null}
-            <div className="grid gap-3">
-              {options.map((option) => {
-                const selected = activeDraft?.type === option.id
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => updateActiveDraft({ type: option.id })}
-                    className={cn(
-                      "rounded-3xl border bg-background p-3 text-left transition hover:-translate-y-0.5 hover:border-primary/40",
-                      selected && "border-primary shadow-md",
-                    )}
-                  >
-                    <BreakfastPhoto option={option} />
-                    <div className="mt-3">
-                      <p className="text-lg font-bold">{option.label}</p>
-                      <p className="mt-1 text-sm leading-5 text-muted-foreground">
-                        {option.description}
-                      </p>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
+            <Carousel setApi={setOptionsCarouselApi} className="w-full">
+              <CarouselContent>
+                {options.map((option) => {
+                  const selected = activeDraft?.type === option.id
+                  return (
+                    <CarouselItem key={option.id}>
+                      <button
+                        type="button"
+                        onClick={() => updateActiveDraft({ type: option.id })}
+                        className={cn(
+                          "w-full rounded-3xl border-2 bg-background p-3 text-left transition",
+                          selected
+                            ? "border-primary bg-primary/10 shadow-md"
+                            : "border-transparent",
+                        )}
+                      >
+                        <BreakfastPhoto option={option} />
+                        <div className="mt-3">
+                          <p className="text-lg font-bold">{option.label}</p>
+                          <p className="mt-1 text-sm leading-5 text-muted-foreground">
+                            {option.description}
+                          </p>
+                        </div>
+                      </button>
+                    </CarouselItem>
+                  )
+                })}
+              </CarouselContent>
+            </Carousel>
+
+            {options.length > 1 ? (
+              <div className="flex items-center justify-between gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 rounded-full"
+                  onClick={() => optionsCarouselApi?.scrollPrev()}
+                  disabled={!canScrollPrevOption}
+                >
+                  <ArrowLeft className="size-4" />
+                  Anterior
+                </Button>
+                <p className="text-sm text-muted-foreground">
+                  {currentOptionSlide + 1} de {options.length}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 rounded-full"
+                  onClick={() => optionsCarouselApi?.scrollNext()}
+                  disabled={!canScrollNextOption}
+                >
+                  Siguiente
+                  <ArrowRight className="size-4" />
+                </Button>
+              </div>
+            ) : null}
 
             <label className="space-y-2 text-sm font-medium">
               Bebida
