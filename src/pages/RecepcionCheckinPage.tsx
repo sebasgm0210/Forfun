@@ -813,6 +813,16 @@ function checkOutPaymentHandled(stay: Stay) {
   return stayIsPaidInFull(stay) || stay.checklist.paymentClosedAtCheckOut;
 }
 
+function stayUnbilledMinibarCharges(stay: Stay) {
+  return (stay.checkoutMinibarCharges ?? []).filter(
+    (charge) => Number(charge.amount || 0) > 0 && !charge.isInvoiced,
+  );
+}
+
+function stayHasUnbilledMinibarCharges(stay: Stay) {
+  return stayUnbilledMinibarCharges(stay).length > 0;
+}
+
 function stayReadyForCheckIn(
   stay: Stay,
   cashInvoicePreferences: Record<string, CashInvoicePreference> = {},
@@ -831,7 +841,8 @@ function stayReadyForCheckOut(stay: Stay) {
     stay.checklist.keyReturned &&
     stay.checklist.remoteReturned &&
     stay.checklist.chargesReviewed &&
-    checkOutPaymentHandled(stay)
+    checkOutPaymentHandled(stay) &&
+    !stayHasUnbilledMinibarCharges(stay)
   );
 }
 
@@ -1646,6 +1657,8 @@ function StayCard({
   void cashInvoicePreference;
   const balance = stayBalance(stay);
   const isPaidInFull = stayIsPaidInFull(stay);
+  const unbilledMinibarCharges = stayUnbilledMinibarCharges(stay);
+  const unbilledMinibarTotal = minibarChargeTotal(unbilledMinibarCharges);
   const operationalNotes = accountManagedByGroup ? [] : stayOperationalNotes(stay);
   const hasUnsavedCheckoutPayment = stay.payments.some(
     (payment) =>
@@ -1974,6 +1987,18 @@ function StayCard({
                 onClick={onClosePaymentAtCheckOut}
               />
             )}
+
+            {mode === "checkout" && unbilledMinibarCharges.length > 0 ? (
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-red-950">
+                <p className="font-semibold">Consumos de minibar sin facturar</p>
+                <p className="mt-1 text-sm text-red-900/80">
+                  Hay {unbilledMinibarCharges.length} consumo(s) de minibar por {money(unbilledMinibarTotal)}{" "}
+                  que todavía no se han facturado. Factura estos consumos desde Snacks / Minibar o
+                  Facturación antes de poder finalizar el check-out; este bloqueo no se puede omitir
+                  manualmente.
+                </p>
+              </div>
+            ) : null}
           </div>
         </div>
       )}
