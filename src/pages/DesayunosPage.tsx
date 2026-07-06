@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   BadgeCheck,
   BedDouble,
@@ -11,7 +11,6 @@ import {
   Copy,
   Download,
   ExternalLink,
-  ImagePlus,
   Loader2,
   Pencil,
   Plus,
@@ -22,23 +21,12 @@ import {
   Save,
   Smartphone,
   TicketCheck,
-  Trash2,
   Utensils,
   X,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { PageHeader } from "@/components/layout/page-header"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -85,14 +73,6 @@ type BreakfastSelection = {
   status: BreakfastSelectionStatus
   redeemedAt?: string
 }
-
-type PendingDialog = {
-  title: string
-  description: string
-  confirmLabel: string
-  tone?: "danger" | "default"
-  onConfirm: () => void
-} | null
 
 type RoomQr = {
   room: Room
@@ -545,18 +525,8 @@ export function DesayunosPage() {
   })
   const [creatingTicket, setCreatingTicket] = useState(false)
   const [redeemingTicketId, setRedeemingTicketId] = useState<string | null>(null)
-  const [editingOptionId, setEditingOptionId] = useState<string | null>(null)
   const [catalogPage, setCatalogPage] = useState(0)
-  const [pendingDialog, setPendingDialog] = useState<PendingDialog>(null)
-  const optionFormRef = useRef<HTMLDivElement>(null)
-  const imageInputRef = useRef<HTMLInputElement>(null)
-  const [optionForm, setOptionForm] = useState({
-    label: "",
-    description: "",
-    imageUrl: "",
-    accent: breakfastAccents[0],
-    displayOrder: "1",
-  })
+  const [orderDrafts, setOrderDrafts] = useState<Record<string, string>>({})
   const [roomQrSummaries, setRoomQrSummaries] = useState<BreakfastRoomQrSummary[]>([])
   const [qrSelections, setQrSelections] = useState<BreakfastSelection[]>([])
   const [editingDishSelectionId, setEditingDishSelectionId] = useState<string | null>(null)
@@ -1156,103 +1126,21 @@ export function DesayunosPage() {
     }
   }
 
-  function breakfastOptionId(label: string) {
-    return label
-      .trim()
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
+  function orderDraftFor(option: BreakfastOption) {
+    return orderDrafts[option.id] ?? String(option.displayOrder ?? 1)
   }
 
-  function resetOptionForm() {
-    setEditingOptionId(null)
-    if (imageInputRef.current) imageInputRef.current.value = ""
-    setOptionForm({
-      label: "",
-      description: "",
-      imageUrl: "",
-      accent: breakfastAccents[0],
-      displayOrder: "1",
-    })
-  }
+  function saveDisplayOrder(option: BreakfastOption) {
+    const parsed = Number(orderDraftFor(option))
+    const displayOrder = Number.isFinite(parsed) ? parsed : 1
+    if (displayOrder === (option.displayOrder ?? 1)) return
 
-  function uploadBreakfastImage(file: File | undefined) {
-    if (!file) return
-    if (!file.type.startsWith("image/")) {
-      toast.error("Selecciona una imagen válida")
-      return
-    }
-
-    const reader = new FileReader()
-    reader.onload = () => {
-      const imageUrl = typeof reader.result === "string" ? reader.result : ""
-      setOptionForm((current) => ({ ...current, imageUrl }))
-      toast.success("Imagen cargada", { description: file.name })
-    }
-    reader.onerror = () => {
-      toast.error("No se pudo cargar la imagen")
-    }
-    reader.readAsDataURL(file)
-  }
-
-  function saveBreakfastOption() {
-    const label = optionForm.label.trim()
-    const description = optionForm.description.trim()
-    const imageUrl = optionForm.imageUrl.trim()
-    const parsedDisplayOrder = Number(optionForm.displayOrder)
-    const displayOrder = Number.isFinite(parsedDisplayOrder) ? parsedDisplayOrder : 1
-    if (!label || !description) {
-      toast.error("Completa el nombre y la descripcion del desayuno")
-      return
-    }
-
-    if (editingOptionId) {
-      dispatch({
-        type: "BREAKFAST_OPTION_UPDATE",
-        id: editingOptionId,
-        patch: { label, description, imageUrl, accent: optionForm.accent, displayOrder },
-      })
-      toast.success("Desayuno actualizado", { description: label })
-      resetOptionForm()
-      setPendingDialog(null)
-      return
-    }
-
-    const baseId = breakfastOptionId(label) || `desayuno-${Date.now()}`
-    const id = breakfastOptions.some((option) => option.id === baseId)
-      ? `${baseId}-${Date.now()}`
-      : baseId
     dispatch({
-      type: "BREAKFAST_OPTION_CREATE",
-      option: { id, label, description, imageUrl, accent: optionForm.accent, displayOrder },
+      type: "BREAKFAST_OPTION_UPDATE",
+      id: option.id,
+      patch: { displayOrder },
     })
-    toast.success("Desayuno agregado", { description: label })
-    resetOptionForm()
-    setCatalogPage(0)
-  }
-
-  function editBreakfastOption(option: BreakfastOption) {
-    setEditingOptionId(option.id)
-    setOptionForm({
-      label: option.label,
-      description: option.description,
-      imageUrl: option.imageUrl ?? "",
-      accent: option.accent,
-      displayOrder: String(option.displayOrder ?? 1),
-    })
-    setActiveTab("catalogo")
-    window.setTimeout(() => {
-      optionFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-    }, 0)
-  }
-
-  function deleteBreakfastOption(option: BreakfastOption) {
-    dispatch({ type: "BREAKFAST_OPTION_DELETE", id: option.id })
-    if (editingOptionId === option.id) resetOptionForm()
-    toast.info("Desayuno quitado del catalogo", { description: option.label })
-    setPendingDialog(null)
+    toast.success("Orden actualizado", { description: option.label })
   }
 
   return (
@@ -1996,291 +1884,105 @@ export function DesayunosPage() {
         </TabsContent>
 
         <TabsContent value="catalogo" className="space-y-4">
-          <section className={cn("grid gap-4", isAdmin && "2xl:grid-cols-[380px_1fr]")}>
-            {isAdmin ? (
-            <div ref={optionFormRef} className="rounded-3xl border bg-card p-5 shadow-sm">
-              <div className="flex items-center gap-2">
-                {editingOptionId ? (
-                  <Pencil className="size-5 text-primary" />
-                ) : (
-                  <Plus className="size-5 text-primary" />
-                )}
-                <h2 className="text-xl font-semibold">
-                  {editingOptionId ? "Editar desayuno" : "Agregar desayuno"}
-                </h2>
+          <section className="rounded-3xl border bg-card p-5 shadow-sm">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">Catálogo disponible</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Estas opciones son las que verá el huésped al escanear el QR. El catálogo es
+                  fijo; para agregar, editar o quitar un platillo se hace directo en la base de
+                  datos.
+                </p>
               </div>
-
-              <div className="mt-5 grid gap-4">
-                <label className="space-y-2 text-sm font-medium">
-                  Nombre
-                  <Input
-                    value={optionForm.label}
-                    onChange={(event) =>
-                      setOptionForm((current) => ({
-                        ...current,
-                        label: event.target.value,
-                      }))
-                    }
-                    className="rounded-2xl"
-                    placeholder="Ej. Chapín"
-                  />
-                </label>
-
-                <label className="space-y-2 text-sm font-medium">
-                  Orden
-                  <Input
-                    type="number"
-                    min={1}
-                    value={optionForm.displayOrder}
-                    onChange={(event) =>
-                      setOptionForm((current) => ({
-                        ...current,
-                        displayOrder: event.target.value,
-                      }))
-                    }
-                    className="rounded-2xl"
-                    placeholder="1"
-                  />
-                  <span className="block text-xs font-normal text-muted-foreground">
-                    Define el orden en que aparece para el huésped. Si dos desayunos comparten el
-                    mismo número, se ordenan alfabéticamente.
-                  </span>
-                </label>
-
-                <label className="space-y-2 text-sm font-medium">
-                  Descripción
-                  <Textarea
-                    value={optionForm.description}
-                    onChange={(event) =>
-                      setOptionForm((current) => ({
-                        ...current,
-                        description: event.target.value,
-                      }))
-                    }
-                    className="min-h-24 rounded-2xl"
-                    placeholder="Describe qué incluye este desayuno."
-                  />
-                </label>
-
-                <div className="space-y-2 text-sm font-medium">
-                  Foto del platillo
-                  <input
-                    ref={imageInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="sr-only"
-                    onChange={(event) => uploadBreakfastImage(event.target.files?.[0])}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => imageInputRef.current?.click()}
-                    className="flex min-h-36 w-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed bg-muted/30 px-4 py-5 text-center transition hover:border-primary/50 hover:bg-primary/5"
-                  >
-                    {optionForm.imageUrl ? (
-                      <img
-                        src={optionForm.imageUrl}
-                        alt="Vista previa del desayuno"
-                        className="aspect-[4/3] w-full rounded-xl object-cover object-center"
-                      />
-                    ) : (
-                      <>
-                        <span className="grid size-11 place-items-center rounded-2xl bg-primary/10 text-primary">
-                          <ImagePlus className="size-5" />
-                        </span>
-                        <span className="text-sm font-semibold">Seleccionar imagen</span>
-                        <span className="text-xs font-normal text-muted-foreground">
-                          Se abrirá el explorador de archivos del equipo.
-                        </span>
-                      </>
-                    )}
-                  </button>
-                  {optionForm.imageUrl ? (
-                    <div className="flex gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="rounded-full"
-                        onClick={() => imageInputRef.current?.click()}
-                      >
-                        Cambiar imagen
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="rounded-full"
-                        onClick={() => {
-                          if (imageInputRef.current) imageInputRef.current.value = ""
-                          setOptionForm((current) => ({ ...current, imageUrl: "" }))
-                        }}
-                      >
-                        Quitar imagen
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Color</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    {breakfastAccents.map((accent, index) => (
-                      <button
-                        key={accent}
-                        type="button"
-                        onClick={() =>
-                          setOptionForm((current) => ({ ...current, accent }))
-                        }
-                        className={cn(
-                          "h-10 rounded-2xl border text-xs font-semibold",
-                          accent,
-                          optionForm.accent === accent && "ring-2 ring-primary",
-                        )}
-                      >
-                        {index + 1}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    className="gap-2 rounded-full"
-                    onClick={() => {
-                      if (!editingOptionId) {
-                        saveBreakfastOption()
-                        return
-                      }
-                      setPendingDialog({
-                        title: "Guardar cambios del desayuno",
-                        description: "Confirma que quieres actualizar esta opción disponible para huéspedes y tickets físicos.",
-                        confirmLabel: "Sí, guardar",
-                        onConfirm: saveBreakfastOption,
-                      })
-                    }}
-                  >
-                    <Save className="size-4" />
-                    {editingOptionId ? "Guardar cambios" : "Agregar"}
-                  </Button>
-                  {editingOptionId ? (
-                    <Button
-                      variant="outline"
-                      className="gap-2 rounded-full"
-                      onClick={resetOptionForm}
-                    >
-                      <X className="size-4" />
-                      Cancelar
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
+              <span className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                {breakfastOptions.length} opciones
+              </span>
             </div>
-            ) : null}
 
-            <div className="rounded-3xl border bg-card p-5 shadow-sm">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <h2 className="text-xl font-semibold">Catálogo disponible</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Estas opciones son las que verá el huésped al escanear el QR.
-                  </p>
-                </div>
-                <span className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
-                  {breakfastOptions.length} opciones
-                </span>
-              </div>
-
-              <div className="mt-5 grid gap-3 md:grid-cols-2">
-                {catalogPageOptions.map((option) => (
-                  <article
-                    key={option.id}
-                    className={cn("rounded-3xl border p-4", option.accent)}
-                  >
-                    <BreakfastOptionPhoto option={option} className="mb-3" />
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
-                          Desayuno
-                        </p>
-                        <h3 className="mt-1 text-lg font-bold">{option.label}</h3>
-                      </div>
-                      {isAdmin ? (
-                        <div className="flex gap-2">
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            className="rounded-full bg-background/70"
-                            onClick={() => editBreakfastOption(option)}
-                            title="Editar desayuno"
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            className="rounded-full bg-background/70"
-                            onClick={() =>
-                              setPendingDialog({
-                                title: `Quitar ${option.label}`,
-                                description: "Esta opción dejará de aparecer para nuevos pedidos. Los pedidos o tickets anteriores conservarán su referencia histórica.",
-                                confirmLabel: "Sí, quitar",
-                                tone: "danger",
-                                onConfirm: () => deleteBreakfastOption(option),
-                              })
-                            }
-                            title="Quitar desayuno"
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      ) : null}
-                    </div>
-                    <p className="mt-3 text-sm leading-6 opacity-80">
-                      {option.description}
+            <div className="mt-5 grid gap-3 md:grid-cols-2">
+              {catalogPageOptions.map((option) => (
+                <article
+                  key={option.id}
+                  className={cn("rounded-3xl border p-4", option.accent)}
+                >
+                  <BreakfastOptionPhoto option={option} className="mb-3" />
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                      Desayuno
                     </p>
-                  </article>
-                ))}
-
-                {breakfastOptions.length === 0 ? (
-                  <div className="rounded-3xl border border-dashed p-10 text-center md:col-span-2">
-                    <p className="font-semibold">Aún no hay desayunos disponibles</p>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Agrega al menos una opción para habilitar la elección desde QR.
-                    </p>
+                    <h3 className="mt-1 text-lg font-bold">{option.label}</h3>
                   </div>
-                ) : null}
-              </div>
-
-              {catalogTotalPages > 1 ? (
-                <div className="mt-5 flex items-center justify-between gap-3">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-1.5 rounded-full"
-                    onClick={() => setCatalogPage((page) => Math.max(0, page - 1))}
-                    disabled={safeCatalogPage === 0}
-                  >
-                    <ChevronLeft className="size-4" />
-                    Anterior
-                  </Button>
-                  <p className="text-sm text-muted-foreground">
-                    Página {safeCatalogPage + 1} de {catalogTotalPages}
+                  <p className="mt-3 text-sm leading-6 opacity-80">
+                    {option.description}
                   </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-1.5 rounded-full"
-                    onClick={() =>
-                      setCatalogPage((page) => Math.min(catalogTotalPages - 1, page + 1))
-                    }
-                    disabled={safeCatalogPage >= catalogTotalPages - 1}
-                  >
-                    Siguiente
-                    <ChevronRight className="size-4" />
-                  </Button>
+
+                  {isAdmin ? (
+                    <div className="mt-4 flex items-center gap-2 border-t border-black/10 pt-3">
+                      <label className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                        Orden
+                      </label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={orderDraftFor(option)}
+                        onChange={(event) =>
+                          setOrderDrafts((current) => ({ ...current, [option.id]: event.target.value }))
+                        }
+                        className="h-9 w-20 rounded-full bg-background/70 text-center"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5 rounded-full bg-background/70"
+                        onClick={() => saveDisplayOrder(option)}
+                      >
+                        <Save className="size-3.5" />
+                        Guardar orden
+                      </Button>
+                    </div>
+                  ) : null}
+                </article>
+              ))}
+
+              {breakfastOptions.length === 0 ? (
+                <div className="rounded-3xl border border-dashed p-10 text-center md:col-span-2">
+                  <p className="font-semibold">Aún no hay desayunos disponibles</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Se agregan directo en la base de datos.
+                  </p>
                 </div>
               ) : null}
             </div>
+
+            {catalogTotalPages > 1 ? (
+              <div className="mt-5 flex items-center justify-between gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 rounded-full"
+                  onClick={() => setCatalogPage((page) => Math.max(0, page - 1))}
+                  disabled={safeCatalogPage === 0}
+                >
+                  <ChevronLeft className="size-4" />
+                  Anterior
+                </Button>
+                <p className="text-sm text-muted-foreground">
+                  Página {safeCatalogPage + 1} de {catalogTotalPages}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 rounded-full"
+                  onClick={() =>
+                    setCatalogPage((page) => Math.min(catalogTotalPages - 1, page + 1))
+                  }
+                  disabled={safeCatalogPage >= catalogTotalPages - 1}
+                >
+                  Siguiente
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
+            ) : null}
           </section>
         </TabsContent>
 
@@ -2602,33 +2304,6 @@ export function DesayunosPage() {
           ) : null}
         </TabsContent>
       </Tabs>
-
-      <AlertDialog
-        open={Boolean(pendingDialog)}
-        onOpenChange={(open) => {
-          if (!open) setPendingDialog(null)
-        }}
-      >
-        <AlertDialogContent className="rounded-3xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{pendingDialog?.title}</AlertDialogTitle>
-            <AlertDialogDescription>{pendingDialog?.description}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="rounded-full">Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              className={
-                pendingDialog?.tone === "danger"
-                  ? "rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  : "rounded-full"
-              }
-              onClick={pendingDialog?.onConfirm}
-            >
-              {pendingDialog?.confirmLabel}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   )
 }
