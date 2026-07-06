@@ -585,6 +585,7 @@ export function DesayunosPage() {
       loadRoomQrSummaries(),
       reloadTodaySelections(),
       loadDailyReport(),
+      refreshApiState(["breakfasts"], { force: true }),
     ])
     setRefreshingBreakfast(false)
     if (results.some((result) => result.status === "rejected")) {
@@ -935,7 +936,7 @@ export function DesayunosPage() {
     if (!selection || selection.status === "canjeado") return
 
     try {
-      await api.breakfast.redeemSelection(id, { redeemed_by: "Recepción" })
+      await api.breakfast.redeemSelection(id, { redeemed_by: currentUser?.name ?? "Recepción" })
       setQrSelections((current) =>
         current.map((item) =>
           item.id === id
@@ -2467,12 +2468,13 @@ export function DesayunosPage() {
                 ["POST", "/api/breakfast/selections/from-qr", "Crear selección desde el QR público validando que breakfastOptionId exista y esté activo, sin exponer datos internos."],
                 ["PATCH", "/api/breakfast/selections/{id}/redeem", "Marcar pedido QR como canjeado y guardar hora/usuario que lo validó."],
                 ["PATCH", "/api/breakfast/selections/{id}/restore", "Devolver un pedido canjeado a recibido cuando se marcó por error."],
+                ["PUT", "/api/breakfast/selections/{id}/from-qr", "Modificar el plato y/o la bebida de un pedido ya recibido, antes de que se prepare (botón \"Modificar plato\" en Pedidos QR)."],
                 ["GET", "/api/breakfast/vouchers/today", "Tickets físicos del día para huéspedes que no usen el QR."],
                 ["POST", "/api/breakfast/vouchers", "Crear ticket físico desde recepción usando reserva/habitación, huésped, fecha, breakfastOptionId, bebida y notas."],
                 ["PATCH", "/api/breakfast/vouchers/{id}/redeem", "Canjear ticket físico y guardar hora."],
                 ["GET", "/api/breakfast/reports/daily", "Resumen diario por tipo de desayuno, habitación y estado para cocina/gerencia."],
               ].map(([method, endpoint, description]) => (
-                <div key={endpoint} className="rounded-2xl border bg-background p-4">
+                <div key={`${method} ${endpoint}`} className="rounded-2xl border bg-background p-4">
                   <div className="flex items-center gap-2">
                     <span className="rounded-full bg-primary px-2.5 py-1 text-xs font-bold text-primary-foreground">
                       {method}
