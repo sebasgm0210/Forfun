@@ -53,6 +53,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { api, getApiErrorMessage } from "@/lib/api"
 import { getSessionUser } from "@/lib/auth"
+import { breakfastImagePath } from "@/lib/breakfast-images"
 import { breakfastQrSvgDataUrl, breakfastQrUrl, roomQrCode } from "@/lib/breakfast-qr"
 import { formatDate, formatDateShort, useStore } from "@/lib/store"
 import { cn } from "@/lib/utils"
@@ -67,6 +68,7 @@ type BreakfastTab =
   | "ticketsFisicos"
   | "backend"
 type TicketSubTab = "crearTicket" | "gestionarTickets"
+type RoomsSubTab = "ocupadas" | "libres"
 type BreakfastFilter = "todos" | BreakfastSelectionStatus
 
 type BreakfastSelection = {
@@ -483,12 +485,16 @@ function BreakfastOptionPhoto({
   option: BreakfastOption
   className?: string
 }) {
-  if (option.imageUrl) {
+  const [imageFailed, setImageFailed] = useState(false)
+  const src = option.imageUrl || breakfastImagePath(option.label)
+
+  if (src && !imageFailed) {
     return (
       <div className={cn("aspect-[4/3] w-full overflow-hidden rounded-2xl bg-muted/20", className)}>
         <img
-          src={option.imageUrl}
+          src={src}
           alt={option.label}
+          onError={() => setImageFailed(true)}
           className="size-full object-cover object-center"
         />
       </div>
@@ -526,6 +532,7 @@ export function DesayunosPage() {
   const isAdmin = currentUser?.role === "administrador" || currentUser?.role === "gerencia"
   const [activeTab, setActiveTab] = useState<BreakfastTab>("pedidos")
   const [ticketSubTab, setTicketSubTab] = useState<TicketSubTab>("crearTicket")
+  const [roomsSubTab, setRoomsSubTab] = useState<RoomsSubTab>("ocupadas")
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<BreakfastFilter>("todos")
   const [selectedRoomNumber, setSelectedRoomNumber] = useState("204")
@@ -814,6 +821,26 @@ export function DesayunosPage() {
     roomQrSummaries,
     rooms,
   ])
+
+  const freeRoomDirectory = useMemo<RoomQr[]>(() => {
+    const occupiedRoomIds = new Set(roomDirectory.map((item) => item.room.id))
+    return rooms
+      .filter((room) => !occupiedRoomIds.has(room.id))
+      .sort((a, b) => a.number.localeCompare(b.number, "es", { numeric: true }))
+      .map((room) => {
+        const qrCode = room.breakfastQrCode ?? roomQrCode(room.number)
+        return {
+          room,
+          reservation: undefined,
+          stayRoomId: undefined,
+          qrCode,
+          qrUrl: breakfastQrUrl(qrCode),
+          guestName: "Sin huésped asignado",
+          allowance: emptyAllowance(),
+          pendingSelection: undefined,
+        }
+      })
+  }, [roomDirectory, rooms])
 
   const selectedRoom =
     roomDirectory.find((item) => item.room.number === selectedRoomNumber) ??
@@ -1648,100 +1675,186 @@ export function DesayunosPage() {
         </TabsContent>
 
         <TabsContent value="habitaciones" className="space-y-4">
-          <section className="rounded-3xl border bg-card p-5 shadow-sm">
-            <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <h2 className="text-xl font-semibold">QR único por habitación</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Cada tarjeta representa el QR fijo que vive en la habitación.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
-                  {roomDirectory.length} habitaciones ocupadas
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-2 rounded-full"
-                  onClick={() => void refreshBreakfastData()}
-                  disabled={refreshingBreakfast}
-                >
-                  <RefreshCw className={cn("size-3.5", refreshingBreakfast && "animate-spin")} />
-                  Actualizar
-                </Button>
-              </div>
+          <Tabs
+            value={roomsSubTab}
+            onValueChange={(value) => setRoomsSubTab(value as RoomsSubTab)}
+            className="space-y-4"
+          >
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <TabsList className="flex h-auto flex-wrap justify-start rounded-2xl bg-muted/60 p-1">
+                <TabsTrigger value="ocupadas">Habitaciones ocupadas</TabsTrigger>
+                <TabsTrigger value="libres">Habitaciones libres</TabsTrigger>
+              </TabsList>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-fit gap-2 rounded-full"
+                onClick={() => void refreshBreakfastData()}
+                disabled={refreshingBreakfast}
+              >
+                <RefreshCw className={cn("size-3.5", refreshingBreakfast && "animate-spin")} />
+                Actualizar
+              </Button>
             </div>
 
-            <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {roomDirectory.map((item) => (
-                <article
-                  key={item.room.id}
-                  className={cn(
-                    "rounded-3xl border bg-background p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md",
-                    item.pendingSelection && "border-amber-200 bg-amber-50/40",
-                  )}
-                >
-                  <div className="flex gap-4">
-                    <MiniQr code={item.qrCode} value={item.qrUrl} roomNumber={item.room.number} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-xl font-semibold">
-                          Habitación {item.room.number}
-                        </h3>
-                        <span
-                          className={cn(
-                            "rounded-full border px-2.5 py-1 text-xs font-semibold",
-                            item.allowance.availableToday <= 0
-                              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                              : item.allowance.usedToday > 0
-                                ? "border-amber-200 bg-amber-50 text-amber-800"
-                                : "border-slate-200 bg-slate-50 text-slate-700",
-                          )}
-                        >
-                          {item.allowance.usedToday}/{item.allowance.daily} canjeados
-                        </span>
-                      </div>
-                      <p className="mt-1 truncate text-sm text-muted-foreground">
-                        {item.guestName}
-                      </p>
-                      <p className="mt-3 rounded-2xl border bg-muted/20 px-3 py-2 text-xs font-semibold">
-                        {item.qrCode}
-                      </p>
-                      {item.reservation ? (
-                        <p className="mt-2 text-xs font-semibold text-muted-foreground">
-                          Hoy faltan {item.allowance.availableToday} de {item.allowance.daily} personas
-                        </p>
-                      ) : (
-                        <p className="mt-2 text-xs font-semibold text-muted-foreground">
-                          Hoy faltan {item.allowance.availableToday} de {item.allowance.daily} personas
-                        </p>
+            <TabsContent value="ocupadas">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+                  <div>
+                    <h2 className="text-xl font-semibold">QR único por habitación</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Cada tarjeta representa el QR fijo que vive en la habitación.
+                    </p>
+                  </div>
+                  <span className="w-fit rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                    {roomDirectory.length} habitaciones ocupadas
+                  </span>
+                </div>
+
+                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {roomDirectory.map((item) => (
+                    <article
+                      key={item.room.id}
+                      className={cn(
+                        "rounded-3xl border bg-background p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md",
+                        item.pendingSelection && "border-amber-200 bg-amber-50/40",
                       )}
-                      <BreakfastPersonStatus item={item} />
-                    </div>
-                  </div>
+                    >
+                      <div className="flex gap-4">
+                        <MiniQr code={item.qrCode} value={item.qrUrl} roomNumber={item.room.number} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-xl font-semibold">
+                              Habitación {item.room.number}
+                            </h3>
+                            <span
+                              className={cn(
+                                "rounded-full border px-2.5 py-1 text-xs font-semibold",
+                                item.allowance.availableToday <= 0
+                                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                                  : item.allowance.usedToday > 0
+                                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                                    : "border-slate-200 bg-slate-50 text-slate-700",
+                              )}
+                            >
+                              {item.allowance.usedToday}/{item.allowance.daily} canjeados
+                            </span>
+                          </div>
+                          <p className="mt-1 truncate text-sm text-muted-foreground">
+                            {item.guestName}
+                          </p>
+                          <p className="mt-3 rounded-2xl border bg-muted/20 px-3 py-2 text-xs font-semibold">
+                            {item.qrCode}
+                          </p>
+                          {item.reservation ? (
+                            <p className="mt-2 text-xs font-semibold text-muted-foreground">
+                              Hoy faltan {item.allowance.availableToday} de {item.allowance.daily} personas
+                            </p>
+                          ) : (
+                            <p className="mt-2 text-xs font-semibold text-muted-foreground">
+                              Hoy faltan {item.allowance.availableToday} de {item.allowance.daily} personas
+                            </p>
+                          )}
+                          <BreakfastPersonStatus item={item} />
+                        </div>
+                      </div>
 
-                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                    <Button
-                      variant="outline"
-                      className="gap-2 rounded-full"
-                      onClick={() => copyQrLink(item)}
-                    >
-                      <Copy className="size-4" />
-                      Copiar QR
-                    </Button>
-                    <Button
-                      className="gap-2 rounded-full"
-                      onClick={() => openQrLink(item)}
-                    >
-                      <ExternalLink className="size-4" />
-                      Abrir QR
-                    </Button>
+                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                        <Button
+                          variant="outline"
+                          className="gap-2 rounded-full"
+                          onClick={() => copyQrLink(item)}
+                        >
+                          <Copy className="size-4" />
+                          Copiar QR
+                        </Button>
+                        <Button
+                          className="gap-2 rounded-full"
+                          onClick={() => openQrLink(item)}
+                        >
+                          <ExternalLink className="size-4" />
+                          Abrir QR
+                        </Button>
+                      </div>
+                    </article>
+                  ))}
+
+                  {roomDirectory.length === 0 ? (
+                    <div className="rounded-3xl border border-dashed p-10 text-center md:col-span-2 xl:col-span-3">
+                      <p className="font-semibold">No hay habitaciones ocupadas</p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Cuando una habitación tenga una reserva activa, aparecerá aquí con su QR.
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+            </TabsContent>
+
+            <TabsContent value="libres">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+                  <div>
+                    <h2 className="text-xl font-semibold">QR de habitaciones libres</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Habitaciones sin huésped activo. Solo se muestra el QR por si necesitas verlo o imprimirlo.
+                    </p>
                   </div>
-                </article>
-              ))}
-            </div>
-          </section>
+                  <span className="w-fit rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                    {freeRoomDirectory.length} habitaciones libres
+                  </span>
+                </div>
+
+                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {freeRoomDirectory.map((item) => (
+                    <article
+                      key={item.room.id}
+                      className="rounded-3xl border bg-background p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+                    >
+                      <div className="flex items-center gap-4">
+                        <MiniQr code={item.qrCode} value={item.qrUrl} roomNumber={item.room.number} />
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-xl font-semibold">
+                            Habitación {item.room.number}
+                          </h3>
+                          <p className="mt-3 rounded-2xl border bg-muted/20 px-3 py-2 text-xs font-semibold">
+                            {item.qrCode}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                        <Button
+                          variant="outline"
+                          className="gap-2 rounded-full"
+                          onClick={() => copyQrLink(item)}
+                        >
+                          <Copy className="size-4" />
+                          Copiar QR
+                        </Button>
+                        <Button
+                          className="gap-2 rounded-full"
+                          onClick={() => openQrLink(item)}
+                        >
+                          <ExternalLink className="size-4" />
+                          Abrir QR
+                        </Button>
+                      </div>
+                    </article>
+                  ))}
+
+                  {freeRoomDirectory.length === 0 ? (
+                    <div className="rounded-3xl border border-dashed p-10 text-center md:col-span-2 xl:col-span-3">
+                      <p className="font-semibold">No hay habitaciones libres</p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Todas las habitaciones tienen huésped activo en este momento.
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+            </TabsContent>
+          </Tabs>
         </TabsContent>
 
         <TabsContent value="vistaQr" className="space-y-4">

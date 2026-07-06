@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/carousel"
 import { Textarea } from "@/components/ui/textarea"
 import { api, getApiErrorMessage } from "@/lib/api"
+import { breakfastImagePath } from "@/lib/breakfast-images"
 import { roomNumberFromQrCode } from "@/lib/breakfast-qr"
 import { useStore } from "@/lib/store"
 import { cn } from "@/lib/utils"
@@ -53,11 +54,15 @@ function isWithinBreakfastHours(date = new Date()) {
 }
 
 function BreakfastPhoto({ option }: { option: BreakfastOption }) {
-  if (option.imageUrl) {
+  const [imageFailed, setImageFailed] = useState(false)
+  const src = option.imageUrl || breakfastImagePath(option.label)
+
+  if (src && !imageFailed) {
     return (
       <img
-        src={option.imageUrl}
+        src={src}
         alt={option.label}
+        onError={() => setImageFailed(true)}
         className="h-28 w-full rounded-2xl object-cover"
       />
     )
