@@ -16,3 +16,9 @@ next.user-config.*
 node_modules
 .next/
 .DS_Store
+
+# Local backups, scratch archives and test-run artifacts (not version-controlled)
+/api.ts
+*.rar
+*.bak
+.playwright-mcp/

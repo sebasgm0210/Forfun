@@ -38,6 +38,16 @@ import {
   paymentTotal,
   paymentTotalByMethod,
 } from "@/components/payments/payment-breakdown-card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -66,6 +76,16 @@ import { formatDate, useStore } from "@/lib/store";
 import type { Advance, CreditAccount, Guest, PaymentRecord, Reservation } from "@/lib/types";
 
 type StayStatus = "Lista para check-in" | "En habitación" | "Check-out finalizado";
+
+type PendingInvoiceEntry = {
+  id: string;
+  code: string;
+  guestName: string;
+  roomNumber: string;
+  checkOut: string;
+  total: number;
+  paid: number;
+};
 
 const CHECKOUT_READY_STORAGE_KEY = "casa-luna-checkout-ready-reservations";
 
@@ -152,6 +172,7 @@ type PaymentIdUpdate = {
   invoiceId?: string;
   invoicedAmount?: number;
   pendingToInvoiceAmount?: number;
+  invoiceableAmount?: number;
   invoicedAt?: string;
 };
 
@@ -196,21 +217,60 @@ type InvoiceRemainingSummary = {
   remaining?: number;
 };
 
+type StayInvoiceKind = "stay" | "minibar";
+
 type StayInvoiceTarget = {
   key: string;
   stage: FelPaymentStage;
   stays: Stay[];
   payments: PaymentRecord[];
   minibarCharges: CheckoutMinibarCharge[];
+  invoiceKind?: StayInvoiceKind;
+};
+
+type MinibarPendingCharge = {
+  reviewId: string;
+  stayId?: string;
+  roomNumber?: string;
+  guest?: string;
+  amount: number;
+  pendingToInvoiceAmount: number;
+  status: string;
+  detailIds: string[];
+};
+
+type MinibarChargeApplyTarget = {
+  key: string;
+  stays: Stay[];
+};
+
+type MinibarChargePaymentForm = {
+  payment_method: "efectivo" | "tarjeta" | "transferencia" | "deposito";
+  payment_reference: string;
+  responsible: string;
+  notes: string;
+};
+
+type CheckoutPaymentApplyTarget = {
+  key: string;
+  stays: Stay[];
 };
 
 type CheckoutMinibarCharge = {
   id: string;
+  reviewId?: string;
   description: string;
   amount: number;
   quantity?: number;
   unitPrice?: number;
   roomNumber?: string;
+  isCharged?: boolean;
+  paymentMethod?: string;
+  paymentReference?: string;
+  chargedAt?: string;
+  chargedBy?: string;
+  status?: string;
+  billingStatus?: string;
   isInvoiced?: boolean;
   invoiceId?: string;
 };
@@ -218,6 +278,7 @@ type CheckoutMinibarCharge = {
 type CheckoutStaySnapshot = {
   stayId: string;
   reservationId: string;
+  total?: number;
   paidAmount?: number;
   pendingAmount?: number;
   invoicedAmount?: number;
@@ -245,6 +306,7 @@ type StayInvoiceForm = {
   description: string;
   notes: string;
   selectedPaymentIds: string[];
+  selectedMinibarChargeIds: string[];
 };
 
 type Room = {
@@ -614,6 +676,26 @@ function paymentStageFromApi(value: string): PaymentRecord["stage"] {
   return "reserva";
 }
 
+function minibarChargePaidFromApi(record: Record<string, unknown>) {
+  const status = apiString(record, ["status", "review_status", "reviewStatus"])
+    .trim()
+    .toLowerCase();
+  const paymentMethod = apiString(record, [
+    "payment_method",
+    "paymentMethod",
+    "metodo_pago",
+  ]).trim();
+  const chargedAt = apiString(record, ["charged_at", "chargedAt", "fecha_cobro"]).trim();
+
+  if (status === "cobrado") return true;
+  if (chargedAt) return true;
+  if (paymentMethod) {
+    return paymentMethod.toLowerCase() !== "pendientecuenta";
+  }
+
+  return false;
+}
+
 function mapCheckoutPayment(item: unknown, index = 0): PaymentRecord | null {
   const record = apiRecord(item);
   const id = apiNumber(record, [
@@ -657,19 +739,126 @@ function mapCheckoutMinibarCharge(item: unknown, index = 0): CheckoutMinibarChar
     "minibar_review_detail_id",
     "id",
   ]);
-  const amount = apiNumber(record, ["amount", "total", "line_total_with_tax"]);
+  const amount = apiNumber(record, ["amount", "total", "total_price", "totalPrice", "line_total_with_tax"]);
 
   if (!id || !amount || amount <= 0) return null;
 
+  const reviewId = apiNumber(record, [
+    "id_minibar_room_review",
+    "idMinibarRoomReview",
+    "minibar_room_review_id",
+    "id_review",
+    "review_id",
+  ]);
+
+  const status = apiString(record, ["status", "review_status", "reviewStatus"]);
+  const paymentMethod = apiString(record, ["payment_method", "paymentMethod", "metodo_pago"]);
+  const paymentReference = apiString(record, [
+    "payment_reference",
+    "paymentReference",
+    "referencia_pago",
+  ]);
+  const chargedAt = apiString(record, ["charged_at", "chargedAt", "fecha_cobro"]);
+  const chargedBy = apiString(record, ["charged_by", "chargedBy", "cobrado_por"]);
+
   return {
     id: String(id),
+    reviewId: reviewId ? String(reviewId) : undefined,
     description: apiString(record, ["description", "name", "item_name"], `Consumo minibar ${index + 1}`),
     amount,
-    quantity: apiNumber(record, ["quantity", "qty"]),
+    quantity: apiNumber(record, ["quantity", "qty", "consumed_quantity", "consumedQuantity"]),
     unitPrice: apiNumber(record, ["unit_price", "unitPrice", "price"]),
     roomNumber: apiString(record, ["room_number", "roomNumber"]),
+    isCharged: minibarChargePaidFromApi(record),
+    paymentMethod,
+    paymentReference,
+    chargedAt,
+    chargedBy,
+    status,
+    billingStatus: apiString(record, ["billing_status", "billingStatus"]),
     isInvoiced: apiBoolean(record, ["is_invoiced", "isInvoiced"], false),
     invoiceId: apiString(record, ["id_invoice", "idInvoice", "invoice_id", "last_invoice_id"]),
+  };
+}
+
+// El backend borra los cargos de minibar confirmados de /api/check-out/in-house
+// (los funde en el total de la habitación), así que esa lista no sirve para saber
+// qué ya se cobró y falta facturar. /api/minibar/stay/{stayId}/charges sí conserva
+// el historial completo (por cobrar, cobrado, facturado), por eso lo usamos para no
+// perder el detalle de snacks/minibar despues de confirmar el cobro.
+function mapMinibarStayCharges(response: unknown): CheckoutMinibarCharge[] {
+  return apiArray(response).flatMap((reviewRaw, reviewIndex) => {
+    const review = apiRecord(reviewRaw);
+    const reviewId = apiNumber(review, ["id_minibar_room_review", "idMinibarRoomReview"]);
+    if (!reviewId) return [];
+
+    const roomNumber = apiString(review, ["room_number", "roomNumber"]);
+    const isCharged = minibarChargePaidFromApi(review);
+    const status = apiString(review, ["status"]);
+    const billingStatus = apiString(review, ["billing_status", "billingStatus"]);
+    const reviewInvoiceId = apiString(review, ["last_invoice_id", "id_invoice"]);
+
+    return apiArray(review.details)
+      .map((detailRaw, detailIndex): CheckoutMinibarCharge | null => {
+        const detail = apiRecord(detailRaw);
+        const id = apiNumber(detail, ["id_minibar_room_review_detail", "id_payment", "id"]);
+        const amount = apiNumber(detail, ["amount"]);
+        if (!id || !amount || amount <= 0) return null;
+
+        return {
+          id: String(id),
+          reviewId: String(reviewId),
+          description: apiString(detail, ["item_name"], `Consumo minibar ${reviewIndex + 1}.${detailIndex + 1}`),
+          amount,
+          quantity: apiNumber(detail, ["consumed_quantity", "quantity"]),
+          unitPrice: apiNumber(detail, ["unit_price"]),
+          roomNumber,
+          isCharged,
+          status,
+          billingStatus,
+          isInvoiced: apiBoolean(detail, ["is_invoiced"], false),
+          invoiceId: apiString(detail, ["id_invoice"]) || reviewInvoiceId,
+        };
+      })
+      .filter((charge): charge is CheckoutMinibarCharge => Boolean(charge));
+  });
+}
+
+function mapMinibarPendingCharge(item: unknown): MinibarPendingCharge | null {
+  const record = apiRecord(item);
+  const reviewId = apiNumber(record, [
+    "id_minibar_room_review",
+    "idMinibarRoomReview",
+    "minibar_room_review_id",
+    "id",
+  ]);
+
+  if (!reviewId) return null;
+
+  const detailIds = apiArray(record.details)
+    .map((detail) => {
+      const detailRecord = apiRecord(detail);
+      return apiNumber(detailRecord, [
+        "id_minibar_room_review_detail",
+        "idMinibarRoomReviewDetail",
+        "id_payment",
+        "idPayment",
+        "id",
+      ]);
+    })
+    .filter((id): id is number => Boolean(id))
+    .map(String);
+
+  return {
+    reviewId: String(reviewId),
+    stayId: apiString(record, ["id_stay", "idStay", "stay_id"]),
+    roomNumber: apiString(record, ["room_number", "roomNumber"]),
+    guest: apiString(record, ["guest", "guest_name", "guestName"]),
+    amount: apiNumber(record, ["total_amount", "totalAmount", "amount", "total"]) ?? 0,
+    pendingToInvoiceAmount:
+      apiNumber(record, ["pending_to_invoice_amount", "pendingToInvoiceAmount"]) ?? 0,
+    status: apiString(record, ["status"], "PorCargar"),
+    detailIds,
   };
 }
 
@@ -692,6 +881,7 @@ function mapCheckoutStaySnapshot(item: unknown): CheckoutStaySnapshot | null {
   return {
     stayId: String(stayId),
     reservationId: String(reservationId),
+    total: apiNumber(record, ["total"]),
     paidAmount: apiNumber(record, ["paid_amount", "paidAmount"]),
     pendingAmount: apiNumber(record, ["pending_amount", "pendingAmount"]),
     invoicedAmount: apiNumber(record, ["invoiced_amount", "invoicedAmount"]),
@@ -737,7 +927,27 @@ function invoiceConceptForItemType(
   concepts: InvoiceConceptOption[],
   itemType: InvoiceItemType,
 ) {
-  return concepts.find((concept) => concept.itemType === itemType);
+  const normalizedItemType = itemType.trim().toUpperCase();
+
+  return concepts.find(
+    (concept) => String(concept.itemType ?? "").trim().toUpperCase() === normalizedItemType,
+  );
+}
+
+function invoiceConceptOptionsFromResponse(value: unknown) {
+  const directConcepts = apiArray(value)
+    .map(mapInvoiceConceptOption)
+    .filter((concept): concept is InvoiceConceptOption => Boolean(concept));
+
+  if (directConcepts.length > 0) return directConcepts;
+
+  const byDeepSearch = collectApiRecords(value)
+    .map(mapInvoiceConceptOption)
+    .filter((concept): concept is InvoiceConceptOption => Boolean(concept));
+
+  return Array.from(
+    new Map(byDeepSearch.map((concept) => [concept.id, concept])).values(),
+  );
 }
 
 function invoiceRemainingSummary(value: unknown): InvoiceRemainingSummary | null {
@@ -789,28 +999,92 @@ function reservationCodeForGuest(stay: Stay) {
   return stay.code.replace(/-[A-Z]$/, "");
 }
 
-function stayTotalDue(stay: Stay) {
-  return stay.total + stay.extraCharges;
-}
+function checkoutSnapshotMinibarAccountTotal(
+  snapshot: CheckoutStaySnapshot | undefined,
+  roomTotal: number,
+  paid: number,
+) {
+  void roomTotal;
+  void paid;
+  if (!snapshot) return 0;
 
-function stayBalance(stay: Stay) {
-  return Math.max(stayTotalDue(stay) - stay.paid, 0);
-}
+  const lineItemsTotal = minibarChargeTotal(snapshot.minibarCharges ?? []);
+  const explicitMinibarTotal = Number(snapshot.minibarTotalAmount || 0);
+  const pendingToInvoiceTotal = Number(snapshot.minibarPendingToInvoiceAmount || 0);
 
-function stayIsPaidInFull(stay: Stay) {
-  return stayBalance(stay) <= 0;
-}
-
-function checkInPaymentHandled(stay: Stay) {
-  return (
-    stayIsPaidInFull(stay) ||
-    stay.checklist.paymentCollectedAtCheckIn ||
-    stay.checklist.paymentDeferredToCheckOut
+  return roundCurrency(
+    Math.max(
+      explicitMinibarTotal,
+      pendingToInvoiceTotal,
+      lineItemsTotal,
+    ),
   );
 }
 
+function stayMinibarAccountTotal(stay: Stay) {
+  const backendTotal = Number(stay.extraCharges || 0);
+  const chargeLinesTotal = minibarChargeTotal(stay.checkoutMinibarCharges ?? []);
+  return roundCurrency(Math.max(backendTotal, chargeLinesTotal));
+}
+
+function stayTotalDue(stay: Stay) {
+  return roundCurrency(stay.total + stayMinibarPendingBalance(stay));
+}
+
+function stayBalance(stay: Stay) {
+  return stayTotalPendingBalance(stay);
+}
+
+function accountRoomPendingBalance(roomTotal: number, paid: number) {
+  return roundCurrency(Math.max(roomTotal - paid, 0));
+}
+
+function accountMinibarPendingBalance(roomTotal: number, minibarTotal: number, paid: number) {
+  const amountAppliedToMinibar = Math.max(paid - roomTotal, 0);
+  return roundCurrency(Math.max(minibarTotal - amountAppliedToMinibar, 0));
+}
+
+function accountTotalPendingBalance(roomTotal: number, minibarTotal: number, paid: number) {
+  return roundCurrency(
+    accountRoomPendingBalance(roomTotal, paid) +
+      accountMinibarPendingBalance(roomTotal, minibarTotal, paid),
+  );
+}
+
+function stayRoomPendingBalance(stay: Stay) {
+  return accountRoomPendingBalance(stay.total, stay.paid);
+}
+
+function stayUncollectedMinibarCharges(stay: Stay) {
+  return (stay.checkoutMinibarCharges ?? []).filter(
+    (charge) => Number(charge.amount || 0) > 0 && !charge.isInvoiced && !charge.isCharged,
+  );
+}
+
+function stayCollectedUnbilledMinibarCharges(stay: Stay) {
+  return (stay.checkoutMinibarCharges ?? []).filter(
+    (charge) => Number(charge.amount || 0) > 0 && !charge.isInvoiced && Boolean(charge.isCharged),
+  );
+}
+
+function stayMinibarPendingBalance(stay: Stay) {
+  return minibarChargeTotal(stayUncollectedMinibarCharges(stay));
+}
+
+function stayTotalPendingBalance(stay: Stay) {
+  return roundCurrency(stayRoomPendingBalance(stay) + stayMinibarPendingBalance(stay));
+}
+
+function stayIsPaidInFull(stay: Stay) {
+  return stayRoomPendingBalance(stay) <= 0.01;
+}
+
+function checkInPaymentHandled(stay: Stay) {
+  return stayIsPaidInFull(stay) || stay.checklist.paymentDeferredToCheckOut;
+}
+
 function checkOutPaymentHandled(stay: Stay) {
-  return stayIsPaidInFull(stay) || stay.checklist.paymentClosedAtCheckOut;
+  return stayIsPaidInFull(stay) && stayMinibarPendingBalance(stay) <= 0.01;
 }
 
 function stayUnbilledMinibarCharges(stay: Stay) {
@@ -841,8 +1115,7 @@ function stayReadyForCheckOut(stay: Stay) {
     stay.checklist.keyReturned &&
     stay.checklist.remoteReturned &&
     stay.checklist.chargesReviewed &&
-    checkOutPaymentHandled(stay) &&
-    !stayHasUnbilledMinibarCharges(stay)
+    checkOutPaymentHandled(stay)
   );
 }
 
@@ -867,6 +1140,28 @@ function stayOperationalNotes(stay: Stay) {
 function paymentsForFelStage(stay: Stay, stage: FelPaymentStage) {
   return stay.payments.filter(
     (payment) => payment.stage === stage && Number(payment.amount || 0) > 0,
+  );
+}
+
+function unsavedCheckoutPayments(stay: Stay) {
+  return stay.payments.filter(
+    (payment) =>
+      payment.stage === "check-out" &&
+      numericApiId(payment.id) === null &&
+      Number(payment.amount || 0) > 0,
+  );
+}
+
+function hasUnsavedCheckoutPayments(stays: Stay[]) {
+  return stays.some((stay) => unsavedCheckoutPayments(stay).length > 0);
+}
+
+function unsavedCheckoutPaymentsTotal(stays: Stay[]) {
+  return roundCurrency(
+    stays.reduce(
+      (sum, stay) => sum + paymentTotal(unsavedCheckoutPayments(stay)),
+      0,
+    ),
   );
 }
 
@@ -906,13 +1201,20 @@ function dispatchesForFelStage(
 
 function backendPaymentInvoicedAmount(payment: PaymentRecord) {
   const amount = Number(payment.amount || 0);
-  const isInvoiced =
-    Boolean(payment.isInvoiced || payment.invoiceId || payment.invoicedAt) ||
-    (Number.isFinite(payment.invoicedAmount) &&
-      Number(payment.invoicedAmount) > 0.01) ||
-    (Number.isFinite(payment.pendingToInvoiceAmount) &&
-      Number(payment.pendingToInvoiceAmount) <= 0.01);
-  return isInvoiced ? amount : 0;
+  const invoicedByDocument = Boolean(payment.isInvoiced || payment.invoiceId || payment.invoicedAt);
+
+  if (!invoicedByDocument) return 0;
+
+  const explicitInvoicedAmount = Number(payment.invoicedAmount);
+  if (
+    Number.isFinite(explicitInvoicedAmount) &&
+    explicitInvoicedAmount > 0.01 &&
+    explicitInvoicedAmount <= amount + 0.01
+  ) {
+    return roundCurrency(explicitInvoicedAmount);
+  }
+
+  return roundCurrency(amount);
 }
 
 function sessionPaymentInvoicedAmount(payment: PaymentRecord, dispatches: FelDispatch[]) {
@@ -923,8 +1225,15 @@ function sessionPaymentInvoicedAmount(payment: PaymentRecord, dispatches: FelDis
     : 0;
 }
 
-function paymentInvoiceableAmount(payment: PaymentRecord, dispatches: FelDispatch[]) {
+function paymentInvoiceableBaseAmount(payment: PaymentRecord) {
   const amount = Number(payment.amount || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+
+  return roundCurrency(amount);
+}
+
+function paymentInvoiceableAmount(payment: PaymentRecord, dispatches: FelDispatch[]) {
+  const amount = paymentInvoiceableBaseAmount(payment);
   const alreadyInvoiced =
     backendPaymentInvoicedAmount(payment) + sessionPaymentInvoicedAmount(payment, dispatches);
 
@@ -987,7 +1296,7 @@ function stageAlreadyInvoicedAmount(
 ) {
   return roundCurrency(
     payments.reduce((sum, payment) => {
-      const amount = Number(payment.amount || 0);
+      const amount = paymentInvoiceableBaseAmount(payment);
       const invoiced =
         backendPaymentInvoicedAmount(payment) + sessionPaymentInvoicedAmount(payment, dispatches);
       return sum + Math.min(amount, invoiced);
@@ -1023,6 +1332,7 @@ function invoiceableMinibarCharges(
     (charge) =>
       Number(charge.amount || 0) > 0 &&
       numericApiId(charge.id) !== null &&
+      Boolean(charge.isCharged) &&
       !minibarChargeAlreadyInvoiced(charge, dispatches),
   );
 }
@@ -1031,21 +1341,122 @@ function minibarChargeTotal(charges: CheckoutMinibarCharge[]) {
   return roundCurrency(charges.reduce((sum, charge) => sum + Number(charge.amount || 0), 0));
 }
 
+function minibarChargesForInvoiceSelection(
+  charges: CheckoutMinibarCharge[] | undefined,
+  dispatches: FelDispatch[],
+  selectedPaymentTotal: number,
+  hasSelectedPayments: boolean,
+) {
+  void selectedPaymentTotal;
+  void hasSelectedPayments;
+  return invoiceableMinibarCharges(charges, dispatches);
+}
+
+function invoiceAmountForSelection(
+  selectedPaymentTotal: number,
+  selectedMinibarTotal: number,
+  hasSelectedPayments: boolean,
+) {
+  void hasSelectedPayments;
+  return roundCurrency(selectedPaymentTotal + selectedMinibarTotal);
+}
+
 function checkoutMinibarChargesForStays(stays: Stay[]) {
   return stays.flatMap((stay) => stay.checkoutMinibarCharges ?? []);
+}
+
+function invoiceKindForTarget(target: StayInvoiceTarget | null | undefined): StayInvoiceKind {
+  return target?.invoiceKind ?? "stay";
+}
+
+function checkoutRoomPendingAmountFromSnapshot(
+  stay: Stay,
+  snapshots: CheckoutStaySnapshot[],
+) {
+  const reservationId = String(numericApiId(stay.id) ?? "");
+  const backendStayId = String(numericApiId(stay.backendStayId) ?? "");
+  const snapshot = snapshots.find(
+    (item) =>
+      item.reservationId === reservationId ||
+      String(numericApiId(item.stayId) ?? "") === backendStayId,
+  );
+
+  const backendPending = Number(snapshot?.pendingAmount ?? NaN);
+  if (Number.isFinite(backendPending) && backendPending >= 0) {
+    return roundCurrency(backendPending);
+  }
+
+  return stayRoomPendingBalance(stay);
+}
+
+// Habitación y snacks/minibar son 2 cuentas separadas. El monto que hace falta
+// en checkout por habitación es SOLO lo que aún no se ha cobrado de minibar
+// (stayMinibarPendingBalance, que ya excluye lo Cobrado/Facturado). No hay que
+// sumar el minibar completo: en cuanto se confirma su cobro (con su propio pago),
+// deja de tener nada que ver con el total de habitación.
+function checkoutTotalPendingAmountFromSnapshot(
+  stay: Stay,
+  snapshots: CheckoutStaySnapshot[],
+) {
+  const roomPendingAmount = checkoutRoomPendingAmountFromSnapshot(stay, snapshots);
+  return roundCurrency(roomPendingAmount + stayMinibarPendingBalance(stay));
+}
+
+function checkoutPaymentsForBackendBalance(
+  payments: PaymentRecord[],
+  pendingAmount: number,
+) {
+  let remaining = roundCurrency(Math.max(pendingAmount, 0));
+  const drafts: { source: PaymentRecord; payment: PaymentRecord }[] = [];
+
+  for (const payment of payments) {
+    if (remaining <= 0.01) break;
+
+    const amount = Number(payment.amount || 0);
+    if (amount <= 0) continue;
+
+    const amountForRoom = roundCurrency(Math.min(amount, remaining));
+    if (amountForRoom <= 0.01) continue;
+
+    drafts.push({
+      source: payment,
+      payment: {
+        ...payment,
+        amount: amountForRoom,
+      },
+    });
+    remaining = roundCurrency(remaining - amountForRoom);
+  }
+
+  return drafts;
 }
 
 function targetInvoiceAvailableAmount(
   target: StayInvoiceTarget,
   dispatches: FelDispatch[],
 ) {
-  const paymentAmount = stageInvoiceAvailableAmount(target.payments, dispatches);
-  const minibarAmount =
-    target.stage === "check-out"
-      ? minibarChargeTotal(invoiceableMinibarCharges(target.minibarCharges, dispatches))
-      : 0;
+  const invoiceKind = invoiceKindForTarget(target);
+  const invoiceablePayments =
+    invoiceKind === "stay"
+      ? invoiceablePaymentsForStage(target.payments, dispatches)
+      : [];
+  const paymentAmount = invoiceablePaymentTotal(invoiceablePayments, dispatches);
+  const selectedMinibarCharges =
+    invoiceKind === "minibar" && target.stage === "check-out"
+      ? minibarChargesForInvoiceSelection(
+          target.minibarCharges,
+          dispatches,
+          paymentAmount,
+          false,
+        )
+      : [];
+  const minibarAmount = minibarChargeTotal(selectedMinibarCharges);
 
-  return roundCurrency(paymentAmount + minibarAmount);
+  return invoiceAmountForSelection(
+    paymentAmount,
+    minibarAmount,
+    invoiceablePayments.length > 0,
+  );
 }
 
 function paymentBackendType(
@@ -1097,11 +1508,15 @@ function checkInInguatHandled(
 }
 
 function groupTotalDue(stays: Stay[]) {
-  return stays.reduce((sum, stay) => sum + stayTotalDue(stay), 0);
+  return stays.reduce((sum, stay) => sum + stay.total, 0);
 }
 
 function groupPaymentBalance(stays: Stay[], payments: PaymentRecord[]) {
   return Math.max(groupTotalDue(stays) - paymentTotal(payments), 0);
+}
+
+function groupMinibarPendingBalanceForStays(stays: Stay[]) {
+  return roundCurrency(stays.reduce((sum, stay) => sum + stayMinibarPendingBalance(stay), 0));
 }
 
 function groupCanSkipInguatReview(
@@ -1136,8 +1551,8 @@ function groupReadyForCheckIn(
 
 function groupReadyForCheckOut(stays: Stay[], payments: PaymentRecord[]) {
   const paymentHandled =
-    groupPaymentBalance(stays, payments) <= 0 ||
-    stays.every((stay) => stay.checklist.paymentClosedAtCheckOut);
+    groupPaymentBalance(stays, payments) <= 0.01 &&
+    groupMinibarPendingBalanceForStays(stays) <= 0.01;
   const roomBasicsHandled = stays.every(
     (stay) =>
       stay.checklist.keyReturned &&
@@ -1374,12 +1789,13 @@ function ExpandToggleButton({
 }
 
 function PaymentSummary({ stay }: { stay: Stay }) {
-  const totalDue = stayTotalDue(stay);
-  const balance = stayBalance(stay);
-  const isPaidInFull = stayIsPaidInFull(stay);
+  const roomPendingBalance = stayRoomPendingBalance(stay);
+  const minibarPendingBalance = stayMinibarPendingBalance(stay);
+  const totalPendingBalance = stayTotalPendingBalance(stay);
+  const isPaidInFull = totalPendingBalance <= 0;
 
   return (
-    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
       <div className="rounded-2xl bg-muted/40 p-3">
         <p className="text-xs text-muted-foreground">Fechas</p>
         <p className="font-semibold">
@@ -1395,18 +1811,35 @@ function PaymentSummary({ stay }: { stay: Stay }) {
       </div>
 
       <div className="rounded-2xl border bg-muted/20 p-3">
-        <p className="text-xs text-muted-foreground">Total estadía</p>
+        <p className="text-xs text-muted-foreground">Total habitación</p>
         <p className="text-lg font-bold">{money(stay.total)}</p>
       </div>
 
       <div className="rounded-2xl border bg-muted/20 p-3">
-        <p className="text-xs text-muted-foreground">Anticipo / pagado</p>
+        <p className="text-xs text-muted-foreground">Pagado</p>
         <p className="text-lg font-bold">{money(stay.paid)}</p>
-        {stay.extraCharges > 0 ? (
-          <p className="mt-1 text-xs text-muted-foreground">
-            Extras: {money(stay.extraCharges)}
-          </p>
-        ) : null}
+      </div>
+
+      <div
+        className={`rounded-2xl border p-3 ${
+          roomPendingBalance > 0
+            ? "border-amber-200 bg-amber-50 text-amber-900"
+            : "border-emerald-200 bg-emerald-50 text-emerald-900"
+        }`}
+      >
+        <p className="text-xs">Saldo pendiente de habitación</p>
+        <p className="text-lg font-bold">{money(roomPendingBalance)}</p>
+      </div>
+
+      <div
+        className={`rounded-2xl border p-3 ${
+          minibarPendingBalance > 0
+            ? "border-orange-200 bg-orange-50 text-orange-900"
+            : "border-emerald-200 bg-emerald-50 text-emerald-900"
+        }`}
+      >
+        <p className="text-xs">Saldo pendiente de snacks y minibar</p>
+        <p className="text-lg font-bold">{money(minibarPendingBalance)}</p>
       </div>
 
       <div
@@ -1416,11 +1849,9 @@ function PaymentSummary({ stay }: { stay: Stay }) {
             : "border-amber-200 bg-amber-50 text-amber-900"
         }`}
       >
-        <p className="text-xs">
-          {isPaidInFull ? "Pago completo" : "Saldo pendiente"}
-        </p>
-        <p className="text-lg font-bold">{money(balance)}</p>
-        <p className="mt-1 text-xs">Total a cubrir: {money(totalDue)}</p>
+        <p className="text-xs">Saldo total pendiente</p>
+        <p className="text-lg font-bold">{money(totalPendingBalance)}</p>
+        <p className="mt-1 text-xs">Habitación + snacks/minibar</p>
       </div>
     </div>
   );
@@ -1462,6 +1893,198 @@ function DeferredBalanceNotice({ balance }: { balance: number }) {
   );
 }
 
+
+function BalanceWarningStyle() {
+  return (
+    <style>{`
+      @keyframes balance-warning-shake {
+        0%, 100% { transform: translateX(0); }
+        25% { transform: translateX(-3px); }
+        50% { transform: translateX(3px); }
+        75% { transform: translateX(-2px); }
+      }
+
+      .balance-warning-shake-once {
+        animation: balance-warning-shake 180ms ease-in-out 2;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .balance-warning-shake-once {
+          animation: none;
+        }
+      }
+    `}</style>
+  );
+}
+
+function PendingBalanceWarningBox() {
+  return (
+    <div className="mt-3 balance-warning-shake-once rounded-2xl border border-red-200 bg-red-50 p-4 text-red-950 ring-2 ring-red-200">
+      <div className="flex items-start gap-3">
+        <div className="rounded-2xl bg-red-100 p-2 text-red-700">
+          <AlertTriangle className="size-5" />
+        </div>
+        <div>
+          <p className="font-semibold">Aún hay saldo pendiente de cancelar</p>
+          <p className="mt-1 text-sm text-red-900/80">
+            Registra primero el pago pendiente de habitación, snacks o minibar. Facturar es opcional; pagar el saldo sí es obligatorio.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function minibarChargeIdsForCharges(charges: CheckoutMinibarCharge[]) {
+  return Array.from(
+    new Set(
+      charges
+        .map((charge) => charge.id)
+        .filter((chargeId): chargeId is string => Boolean(chargeId)),
+    ),
+  );
+}
+
+function minibarReviewIdsForCharges(charges: CheckoutMinibarCharge[]) {
+  return Array.from(
+    new Set(
+      charges
+        .map((charge) => charge.reviewId)
+        .filter((reviewId): reviewId is string => Boolean(reviewId)),
+    ),
+  );
+}
+
+function minibarChargeEndpointIdsForCharges(
+  charges: CheckoutMinibarCharge[],
+  pendingCharges: MinibarPendingCharge[],
+) {
+  const detailIds = new Set(minibarChargeIdsForCharges(charges));
+  const reviewIds = new Set(minibarReviewIdsForCharges(charges));
+
+  const pendingReviewIds = pendingCharges
+    .filter(
+      (pendingCharge) =>
+        reviewIds.has(pendingCharge.reviewId) ||
+        pendingCharge.detailIds.some((detailId) => detailIds.has(detailId)),
+    )
+    .map((pendingCharge) => pendingCharge.reviewId);
+
+  return Array.from(new Set([...pendingReviewIds, ...reviewIds]));
+}
+
+function MinibarChargeCollectionCard({
+  stays,
+  saving = false,
+  onConfirm,
+  onInvoice,
+}: {
+  stays: Stay[];
+  saving?: boolean;
+  onConfirm?: () => void;
+  onInvoice?: () => void;
+}) {
+  const charges = stays.flatMap((stay) => stay.checkoutMinibarCharges ?? []);
+  const uncollectedCharges = stays.flatMap(stayUncollectedMinibarCharges);
+  const collectedUnbilledCharges = stays.flatMap(stayCollectedUnbilledMinibarCharges);
+  const uncollectedTotal = minibarChargeTotal(uncollectedCharges);
+  const collectedUnbilledTotal = minibarChargeTotal(collectedUnbilledCharges);
+  const chargeIds = minibarChargeIdsForCharges(uncollectedCharges);
+
+  if (charges.length === 0) return null;
+
+  return (
+    <div className={`mt-4 rounded-2xl border p-4 ${
+      uncollectedTotal > 0
+        ? "border-orange-200 bg-orange-50 text-orange-950"
+        : "border-emerald-200 bg-emerald-50 text-emerald-950"
+    }`}>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-semibold">Cobro de snacks / minibar</p>
+            {uncollectedTotal > 0 ? (
+              <span className="rounded-full border border-orange-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-orange-800">
+                Pendiente de cobro {money(uncollectedTotal)}
+              </span>
+            ) : (
+              <span className="rounded-full border border-emerald-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
+                Cobrado
+              </span>
+            )}
+            {collectedUnbilledTotal > 0 ? (
+              <span className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-800">
+                Disponible FEL {money(collectedUnbilledTotal)}
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-sm opacity-85">
+            Este cobro viene de camarería/minibar. No se agrega como abono manual de habitación.
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {uncollectedTotal > 0 ? (
+            <Button
+              type="button"
+              size="sm"
+              className="rounded-full"
+              disabled={saving || !onConfirm || chargeIds.length === 0}
+              onClick={onConfirm}
+            >
+              {saving ? "Confirmando..." : "Confirmar cobro de minibar"}
+            </Button>
+          ) : null}
+          {collectedUnbilledTotal > 0 ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="rounded-full border-blue-200 bg-white text-blue-800 hover:bg-blue-50"
+              disabled={saving || !onInvoice}
+              onClick={onInvoice}
+            >
+              <Receipt className="mr-2 size-4" />
+              Facturar snacks/minibar
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2">
+        {charges.map((charge) => {
+          const charged = Boolean(charge.isCharged || charge.isInvoiced);
+          return (
+            <div
+              key={`${charge.reviewId ?? "sin-review"}-${charge.id}`}
+              className="flex flex-col gap-2 rounded-2xl border bg-white/70 p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{charge.description}</p>
+                <p className="text-xs opacity-75">
+                  {charge.quantity ? `${charge.quantity} x ${money(charge.unitPrice ?? 0)} · ` : ""}
+                  Código {charge.id}
+                  {charge.reviewId ? ` · Revisión ${charge.reviewId}` : ""}
+                  {charge.roomNumber ? ` · Hab. ${charge.roomNumber}` : ""}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <strong>{money(charge.amount)}</strong>
+                <span className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${
+                  charged
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    : "border-orange-200 bg-orange-50 text-orange-800"
+                }`}>
+                  {charge.isInvoiced ? "Facturado" : charged ? "Cobrado" : "Por cobrar"}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function FelPaymentNotice({
   stay,
   stage,
@@ -1477,9 +2100,6 @@ function FelPaymentNotice({
 }) {
   const stagePayments = paymentsForInvoiceAction(stay, stage);
   const amount = paymentTotal(stagePayments);
-  const pendingMinibarCharges =
-    stage === "check-out" ? invoiceableMinibarCharges(minibarCharges, dispatches) : [];
-  const pendingMinibarAmount = minibarChargeTotal(pendingMinibarCharges);
   const kind = felKindForStay(stay);
   const stageLabel = stage === "check-in" ? "check-in" : "check-out";
   const registeredLabel =
@@ -1498,12 +2118,12 @@ function FelPaymentNotice({
             .reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
         )
       : 0;
-  const availableToInvoice = roundCurrency(
-    stageInvoiceAvailableAmount(stagePayments, dispatches) +
-      unsavedCheckoutPaymentAmount +
-      pendingMinibarAmount,
+  const availablePaymentAmount = roundCurrency(
+    stageInvoiceAvailableAmount(stagePayments, dispatches) + unsavedCheckoutPaymentAmount,
   );
-  const registeredAmount = roundCurrency(amount + pendingMinibarAmount);
+  void minibarCharges;
+  const availableToInvoice = availablePaymentAmount;
+  const registeredAmount = amount;
   const hasPendingInvoice = availableToInvoice > 0.01;
   const hasUnsavedCheckInPayments =
     stage === "check-in" &&
@@ -1550,9 +2170,9 @@ function FelPaymentNotice({
               ? `${money(registeredAmount)} ${registeredLabel}. Disponible para facturar: ${money(availableToInvoice)}.`
               : `Cuando registres un abono o pago total en ${stageLabel}, aparecerá aquí para enviarlo a FEL.`}
           </p>
-          {pendingMinibarAmount > 0 ? (
+          {stage === "check-out" ? (
             <p className="mt-1 text-xs font-medium text-blue-900/75">
-              Incluye consumos/minibar pendientes: {money(pendingMinibarAmount)}.
+              Los snacks/minibar se facturan por separado desde la tarjeta de cobro.
             </p>
           ) : null}
           {dispatches.length > 0 ? (
@@ -1607,6 +2227,106 @@ function FelPaymentNotice({
   );
 }
 
+
+function MinibarFelNotice({
+  stays,
+  dispatches,
+  saving = false,
+  onInvoice,
+}: {
+  stays: Stay[];
+  dispatches: FelDispatch[];
+  saving?: boolean;
+  onInvoice?: () => void;
+}) {
+  const invoiceableCharges = invoiceableMinibarCharges(
+    checkoutMinibarChargesForStays(stays),
+    dispatches,
+  );
+  const availableToInvoice = minibarChargeTotal(invoiceableCharges);
+
+  if (availableToInvoice <= 0.01) return null;
+
+  return (
+    <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50/80 p-4 text-blue-950">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-semibold">Facturación FEL - Snacks/minibar</p>
+            <span className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-800">
+              Factura separada
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-blue-900/80">
+            Snacks/minibar cobrados y no facturados. Disponible para facturar: {money(availableToInvoice)}.
+          </p>
+        </div>
+
+        <Button
+          type="button"
+          size="sm"
+          className="shrink-0 gap-2 rounded-full"
+          disabled={saving || !onInvoice}
+          onClick={onInvoice}
+        >
+          <Receipt className="size-4" />
+          Facturar snacks/minibar pendiente
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AddPaymentChoiceDialog({
+  open,
+  onOpenChange,
+  onPayRoomBalance,
+  onPaySnacks,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onPayRoomBalance: () => void;
+  onPaySnacks: () => void;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="rounded-3xl">
+        <AlertDialogHeader>
+          <AlertDialogTitle>¿Qué vas a cobrar?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Esta cuenta tiene saldo pendiente de habitación y de snacks/minibar por separado.
+            Elige qué vas a cobrar para no mezclar ambos cobros.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="flex-col gap-2 sm:flex-col sm:justify-start">
+          <Button
+            type="button"
+            className="w-full rounded-full"
+            onClick={() => {
+              onOpenChange(false);
+              onPayRoomBalance();
+            }}
+          >
+            Pagar saldo pendiente de habitación
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full rounded-full"
+            onClick={() => {
+              onOpenChange(false);
+              onPaySnacks();
+            }}
+          >
+            Pagar snacks/minibar
+          </Button>
+          <AlertDialogCancel className="w-full rounded-full">Cancelar</AlertDialogCancel>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 function StayCard({
   stay,
   mode,
@@ -1617,6 +2337,10 @@ function StayCard({
   onClosePaymentAtCheckOut,
   onUndoCheckInPayment,
   onPaymentsChange,
+  onApplyCheckoutPayments,
+  onConfirmMinibarCharges,
+  onInvoiceMinibarCharges,
+  minibarChargeSaving = false,
   paymentsSaving = false,
   felDispatches,
   cashInvoicePreference,
@@ -1630,6 +2354,7 @@ function StayCard({
   hideFinalAction = false,
   accountManagedByGroup = false,
   allowCollapse = true,
+  balanceWarning = false,
 }: {
   stay: Stay;
   mode: "checkin" | "checkout";
@@ -1640,6 +2365,10 @@ function StayCard({
   onClosePaymentAtCheckOut: () => void;
   onUndoCheckInPayment: () => void;
   onPaymentsChange: (payments: PaymentRecord[], stage: "check-in" | "check-out") => void;
+  onApplyCheckoutPayments?: () => void;
+  onConfirmMinibarCharges?: () => void;
+  onInvoiceMinibarCharges?: () => void;
+  minibarChargeSaving?: boolean;
   paymentsSaving?: boolean;
   felDispatches: FelDispatch[];
   cashInvoicePreference: CashInvoicePreference;
@@ -1653,12 +2382,28 @@ function StayCard({
   hideFinalAction?: boolean;
   accountManagedByGroup?: boolean;
   allowCollapse?: boolean;
+  balanceWarning?: boolean;
 }) {
   void cashInvoicePreference;
-  const balance = stayBalance(stay);
+  const [addPaymentChoiceOpen, setAddPaymentChoiceOpen] = useState(false);
+  const balance = stayRoomPendingBalance(stay);
+  const roomPendingBalance = stayRoomPendingBalance(stay);
+  const minibarPendingBalance = stayMinibarPendingBalance(stay);
+  const totalPendingBalance = stayTotalPendingBalance(stay);
+  const minibarCardAnchorId = `minibar-charge-card-${stay.id}`;
+  const showAddPaymentChoice =
+    mode === "checkout" && roomPendingBalance > 0.01 && minibarPendingBalance > 0.01;
+  // Habitación y snacks/minibar son 2 cuentas separadas: el total a cubrir en
+  // checkout solo suma el minibar que AÚN no se ha confirmado/cobrado
+  // (stayMinibarPendingBalance ya excluye lo Cobrado/Facturado). En cuanto se
+  // confirma el cobro de minibar por su cuenta, deja de sumarse aquí.
+  const checkoutCloseTotal =
+    mode === "checkout"
+      ? roundCurrency(stay.total + minibarPendingBalance)
+      : stay.total;
+  const checkoutDraftPayments = unsavedCheckoutPayments(stay);
+  const checkoutDraftPaymentsTotal = paymentTotal(checkoutDraftPayments);
   const isPaidInFull = stayIsPaidInFull(stay);
-  const unbilledMinibarCharges = stayUnbilledMinibarCharges(stay);
-  const unbilledMinibarTotal = minibarChargeTotal(unbilledMinibarCharges);
   const operationalNotes = accountManagedByGroup ? [] : stayOperationalNotes(stay);
   const hasUnsavedCheckoutPayment = stay.payments.some(
     (payment) =>
@@ -1679,7 +2424,9 @@ function StayCard({
     return (
       <article
         id={`stay-card-${stay.id}`}
-        className="rounded-3xl border bg-background p-4 shadow-sm transition hover:border-primary/30"
+        className={`rounded-3xl border bg-background p-4 shadow-sm transition hover:border-primary/30 ${
+          balanceWarning && balance > 0.01 ? "balance-warning-shake-once ring-2 ring-red-300 ring-offset-2" : ""
+        }`}
       >
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
@@ -1736,10 +2483,10 @@ function StayCard({
               </div>
             </div>
           ) : (
-            <div className="grid min-w-0 gap-2 sm:grid-cols-3 xl:min-w-[420px]">
+            <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:min-w-[560px] xl:grid-cols-4">
               <div className="min-w-0 rounded-2xl border bg-muted/20 px-3 py-2">
-                <p className="text-xs text-muted-foreground">Total</p>
-                <p className="truncate font-bold">{money(stayTotalDue(stay))}</p>
+                <p className="text-xs text-muted-foreground">Total habitación</p>
+                <p className="truncate font-bold">{money(stay.total)}</p>
               </div>
               <div className="min-w-0 rounded-2xl border bg-muted/20 px-3 py-2">
                 <p className="text-xs text-muted-foreground">Pagado</p>
@@ -1747,13 +2494,23 @@ function StayCard({
               </div>
               <div
                 className={`min-w-0 rounded-2xl border px-3 py-2 ${
-                  balance > 0
+                  minibarPendingBalance > 0
+                    ? "border-orange-200 bg-orange-50 text-orange-900"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-900"
+                }`}
+              >
+                <p className="text-xs">Snacks/minibar</p>
+                <p className="truncate font-bold">{money(minibarPendingBalance)}</p>
+              </div>
+              <div
+                className={`min-w-0 rounded-2xl border px-3 py-2 ${
+                  totalPendingBalance > 0
                     ? "border-amber-200 bg-amber-50 text-amber-900"
                     : "border-emerald-200 bg-emerald-50 text-emerald-900"
                 }`}
               >
-                <p className="text-xs">Saldo</p>
-                <p className="truncate font-bold">{money(balance)}</p>
+                <p className="text-xs">Saldo total</p>
+                <p className="truncate font-bold">{money(totalPendingBalance)}</p>
               </div>
             </div>
           )}
@@ -1785,7 +2542,9 @@ function StayCard({
   return (
     <article
       id={`stay-card-${stay.id}`}
-      className="rounded-3xl border bg-background p-4"
+      className={`rounded-3xl border bg-background p-4 ${
+        balanceWarning && balance > 0.01 ? "balance-warning-shake-once ring-2 ring-red-300 ring-offset-2" : ""
+      }`}
     >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
@@ -1822,6 +2581,8 @@ function StayCard({
         <>
       <PaymentSummary stay={stay} />
 
+      {balanceWarning && balance > 0.01 ? <PendingBalanceWarningBox /> : null}
+
       {showPaymentBreakdown ? (
         <PaymentBreakdownCard
           title={mode === "checkin" ? "Pagos en check-in" : "Pagos de checkout"}
@@ -1832,7 +2593,7 @@ function StayCard({
                 ? "Puedes registrar varios pagos hasta cubrir el saldo pendiente. Al completar la salida solo se enviarán los pagos nuevos."
                 : "La cuenta ya está cubierta. Este desglose es únicamente de consulta."
           }
-          total={stayTotalDue(stay)}
+          total={checkoutCloseTotal}
           payments={stay.payments}
           onChange={
             mode === "checkin" || checkoutPaymentsEditable
@@ -1849,10 +2610,51 @@ function StayCard({
           allowCredit={Boolean(creditInfo)}
           creditInfo={creditInfo}
           readOnly={mode === "checkout" && !checkoutPaymentsEditable}
+          onBeforeAddPayment={
+            showAddPaymentChoice
+              ? () => {
+                  setAddPaymentChoiceOpen(true);
+                  return false;
+                }
+              : undefined
+          }
           showInvoiceStatus
           headerLayout="inline"
           className="mt-4"
         />
+      ) : null}
+
+      {mode === "checkout" && checkoutDraftPayments.length > 0 ? (
+        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-950">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold">Pagos pendientes de aplicar</p>
+              <p className="text-xs text-amber-900/80">
+                {checkoutDraftPayments.length} pago(s) por {money(checkoutDraftPaymentsTotal)}.
+                No se enviarán a FEL ni al backend hasta presionar Aplicar pagos.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              className="shrink-0 rounded-full"
+              onClick={onApplyCheckoutPayments}
+            >
+              Aplicar pagos
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {mode === "checkout" ? (
+        <div id={minibarCardAnchorId}>
+          <MinibarChargeCollectionCard
+            stays={[stay]}
+            saving={minibarChargeSaving}
+            onConfirm={onConfirmMinibarCharges}
+            onInvoice={onInvoiceMinibarCharges}
+          />
+        </div>
       ) : null}
 
       <FelPaymentNotice
@@ -1861,6 +2663,28 @@ function StayCard({
         dispatches={felDispatches}
         minibarCharges={stay.checkoutMinibarCharges}
         onSend={() => onSendToFel()}
+      />
+
+      {mode === "checkout" ? (
+        <MinibarFelNotice
+          stays={[stay]}
+          dispatches={felDispatches}
+          saving={minibarChargeSaving}
+          onInvoice={onInvoiceMinibarCharges}
+        />
+      ) : null}
+
+      <AddPaymentChoiceDialog
+        open={addPaymentChoiceOpen}
+        onOpenChange={setAddPaymentChoiceOpen}
+        onPayRoomBalance={() =>
+          onPaymentsChange([...stay.payments, createPaymentRecord("check-out")], "check-out")
+        }
+        onPaySnacks={() => {
+          document
+            .getElementById(minibarCardAnchorId)
+            ?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }}
       />
         </>
       )}
@@ -1988,14 +2812,12 @@ function StayCard({
               />
             )}
 
-            {mode === "checkout" && unbilledMinibarCharges.length > 0 ? (
-              <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-red-950">
-                <p className="font-semibold">Consumos de minibar sin facturar</p>
-                <p className="mt-1 text-sm text-red-900/80">
-                  Hay {unbilledMinibarCharges.length} consumo(s) de minibar por {money(unbilledMinibarTotal)}{" "}
-                  que todavía no se han facturado. Factura estos consumos desde Snacks / Minibar o
-                  Facturación antes de poder finalizar el check-out; este bloqueo no se puede omitir
-                  manualmente.
+            {mode === "checkout" && minibarPendingBalance > 0 ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-950">
+                <p className="font-semibold">Saldo de snacks y minibar pendiente</p>
+                <p className="mt-1 text-sm text-amber-900/80">
+                  Hay {money(minibarPendingBalance)} pendiente de pago por snacks/minibar. Puedes facturarlo o no,
+                  pero para finalizar el check-out primero debe quedar pagado.
                 </p>
               </div>
             ) : null}
@@ -2099,6 +2921,10 @@ function GuestStayGroup({
   savingCheckInPaymentIds,
   groupPayments,
   onGroupPaymentsChange,
+  onApplyGroupCheckoutPayments,
+  onConfirmGroupMinibarCharges,
+  onInvoiceGroupMinibarCharges,
+  minibarChargeSaving = false,
   felDispatches,
   cashInvoicePreferences,
   onSendToFel,
@@ -2116,6 +2942,7 @@ function GuestStayGroup({
   onCompleteGroupCheckIn,
   onCompleteGroupCheckOut,
   creditInfo,
+  balanceWarningKeys,
 }: {
   groupKey: string;
   stays: Stay[];
@@ -2144,6 +2971,10 @@ function GuestStayGroup({
     payments: PaymentRecord[],
     stage: "check-in" | "check-out",
   ) => void;
+  onApplyGroupCheckoutPayments?: () => void;
+  onConfirmGroupMinibarCharges?: () => void;
+  onInvoiceGroupMinibarCharges?: () => void;
+  minibarChargeSaving?: boolean;
   felDispatches: FelDispatch[];
   cashInvoicePreferences: Record<string, CashInvoicePreference>;
   onSendToFel: (
@@ -2169,15 +3000,50 @@ function GuestStayGroup({
   onCompleteGroupCheckIn: () => Promise<void>;
   onCompleteGroupCheckOut: () => void;
   creditInfo?: CreditPaymentInfo;
+  balanceWarningKeys: Set<string>;
 }) {
   const primary = stays[0];
   const stayIds = stays.map((stay) => stay.id);
   const actionDate = mode === "checkin" ? primary.checkIn : primary.checkOut;
+  const [groupAddPaymentChoiceOpen, setGroupAddPaymentChoiceOpen] = useState(false);
+  const groupMinibarCardAnchorId = `minibar-charge-card-group-${groupKey}`;
   const total = groupTotalDue(stays);
+  // Igual que en la card individual: el backend exige que el pago de checkout cubra
+  // habitación + minibar en una sola llamada, sin importar si el minibar ya se
+  // "confirmó" para FEL. Ver checkoutCloseTotal en StayAccountCard.
+  // Igual que en la card individual: solo se suma el minibar aún no confirmado
+  // (habitación y minibar son 2 cuentas separadas). Ver checkoutCloseTotal en
+  // StayCard.
+  const groupCheckoutCloseTotal =
+    mode === "checkout"
+      ? roundCurrency(total + groupMinibarPendingBalanceForStays(stays))
+      : total;
   const isGroup = stays.length > 1;
   const groupStage: FelPaymentStage = mode === "checkin" ? "check-in" : "check-out";
-  const groupPaid = paymentTotal(groupPayments);
+  const groupCheckoutDraftPayments = groupPayments.filter(
+    (payment) =>
+      payment.stage === "check-out" &&
+      numericApiId(payment.id) === null &&
+      Number(payment.amount || 0) > 0,
+  );
+  const groupCheckoutDraftPaymentsTotal = paymentTotal(groupCheckoutDraftPayments);
+  // stay.paid ya incluye el ajuste por dinero de minibar que el backend suma al
+  // paid_amount del stay sin agregarlo a la lista de payments (ver stays useMemo).
+  // groupPayments es una lista aparte que no pasa por ese ajuste, así que tomamos
+  // el máximo para no perder esa corrección a nivel de grupo.
+  const groupPaid = Math.max(
+    paymentTotal(groupPayments),
+    stays.reduce((sum, stay) => sum + stay.paid, 0),
+  );
   const groupBalance = groupPaymentBalance(stays, groupPayments);
+  const groupRoomTotal = stays.reduce((sum, stay) => sum + stay.total, 0);
+  const groupMinibarPendingBalance = groupMinibarPendingBalanceForStays(stays);
+  const groupRoomPendingBalance = accountRoomPendingBalance(groupRoomTotal, groupPaid);
+  const groupTotalPendingBalance = roundCurrency(
+    groupRoomPendingBalance + groupMinibarPendingBalance,
+  );
+  const showGroupAddPaymentChoice =
+    mode === "checkout" && groupRoomPendingBalance > 0.01 && groupMinibarPendingBalance > 0.01;
   const paid = isGroup ? groupPaid : stays.reduce((sum, stay) => sum + stay.paid, 0);
   const balance = isGroup
     ? groupBalance
@@ -2245,7 +3111,7 @@ function GuestStayGroup({
     total: stays.reduce((sum, stay) => sum + stay.total, 0),
     paid: groupPaid,
     payments: groupPayments,
-    extraCharges: stays.reduce((sum, stay) => sum + stay.extraCharges, 0),
+    extraCharges: stays.reduce((sum, stay) => sum + stayMinibarAccountTotal(stay), 0),
     checkoutMinibarCharges: checkoutMinibarChargesForStays(stays),
     checklist: primary.checklist,
   };
@@ -2254,6 +3120,7 @@ function GuestStayGroup({
     groupKey,
     groupStage,
   );
+  const groupBalanceWarning = balanceWarningKeys.has(`group:${groupKey}`);
   const groupChecklistChecked = (key: ChecklistKey) =>
     stays.every((stay) => stay.checklist[key]);
   const toggleGroupChecklist = (key: ChecklistKey) =>
@@ -2286,14 +3153,10 @@ function GuestStayGroup({
             </p>
           </div>
 
-          <div className="grid min-w-0 gap-2 sm:grid-cols-4 xl:min-w-[560px]">
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:min-w-[680px] xl:grid-cols-5">
             <div className="min-w-0 rounded-2xl border bg-muted/20 px-3 py-2">
               <p className="text-xs text-muted-foreground">Habitación(es)</p>
               <p className="truncate font-bold">{roomNumbersSummary || stays.length}</p>
-            </div>
-            <div className="min-w-0 rounded-2xl border bg-muted/20 px-3 py-2">
-              <p className="text-xs text-muted-foreground">Total</p>
-              <p className="truncate font-bold">{money(total)}</p>
             </div>
             <div className="min-w-0 rounded-2xl border bg-muted/20 px-3 py-2">
               <p className="text-xs text-muted-foreground">Pagado</p>
@@ -2301,13 +3164,33 @@ function GuestStayGroup({
             </div>
             <div
               className={`min-w-0 rounded-2xl border px-3 py-2 ${
-                balance > 0
+                groupRoomPendingBalance > 0
                   ? "border-amber-200 bg-amber-50 text-amber-900"
                   : "border-emerald-200 bg-emerald-50 text-emerald-900"
               }`}
             >
-              <p className="text-xs">Saldo</p>
-              <p className="truncate font-bold">{money(balance)}</p>
+              <p className="text-xs">Saldo habitación</p>
+              <p className="truncate font-bold">{money(groupRoomPendingBalance)}</p>
+            </div>
+            <div
+              className={`min-w-0 rounded-2xl border px-3 py-2 ${
+                groupMinibarPendingBalance > 0
+                  ? "border-orange-200 bg-orange-50 text-orange-900"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-900"
+              }`}
+            >
+              <p className="text-xs">Snacks/minibar</p>
+              <p className="truncate font-bold">{money(groupMinibarPendingBalance)}</p>
+            </div>
+            <div
+              className={`min-w-0 rounded-2xl border px-3 py-2 ${
+                groupTotalPendingBalance > 0
+                  ? "border-amber-200 bg-amber-50 text-amber-900"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-900"
+              }`}
+            >
+              <p className="text-xs">Saldo total</p>
+              <p className="truncate font-bold">{money(groupTotalPendingBalance)}</p>
             </div>
           </div>
 
@@ -2336,7 +3219,12 @@ function GuestStayGroup({
   }
 
   return (
-    <section className="grid gap-4 2xl:grid-cols-[340px_1fr]">
+    <section
+      id={`stay-group-${groupKey}`}
+      className={`grid gap-4 2xl:grid-cols-[340px_1fr] ${
+        groupBalanceWarning && groupBalance > 0.01 ? "balance-warning-shake-once rounded-3xl ring-2 ring-red-300 ring-offset-2" : ""
+      }`}
+    >
       <article className="rounded-3xl border bg-background p-4 shadow-sm">
         <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
           Cliente
@@ -2357,22 +3245,38 @@ function GuestStayGroup({
             <p className="text-lg font-bold">{stays.length}</p>
           </div>
           <div className="rounded-2xl border bg-muted/20 p-3">
-            <p className="text-xs text-muted-foreground">Total cuenta</p>
-            <p className="text-lg font-bold">{money(total)}</p>
-          </div>
-          <div className="rounded-2xl border bg-muted/20 p-3">
             <p className="text-xs text-muted-foreground">Pagado</p>
             <p className="text-lg font-bold">{money(paid)}</p>
           </div>
           <div
             className={`rounded-2xl border p-3 ${
-              balance > 0
+              groupRoomPendingBalance > 0
                 ? "border-amber-200 bg-amber-50 text-amber-900"
                 : "border-emerald-200 bg-emerald-50 text-emerald-900"
             }`}
           >
-            <p className="text-xs">Saldo del cliente</p>
-            <p className="text-lg font-bold">{money(balance)}</p>
+            <p className="text-xs">Saldo pendiente de habitación</p>
+            <p className="text-lg font-bold">{money(groupRoomPendingBalance)}</p>
+          </div>
+          <div
+            className={`rounded-2xl border p-3 ${
+              groupMinibarPendingBalance > 0
+                ? "border-orange-200 bg-orange-50 text-orange-900"
+                : "border-emerald-200 bg-emerald-50 text-emerald-900"
+            }`}
+          >
+            <p className="text-xs">Saldo pendiente de snacks y minibar</p>
+            <p className="text-lg font-bold">{money(groupMinibarPendingBalance)}</p>
+          </div>
+          <div
+            className={`rounded-2xl border p-3 ${
+              groupTotalPendingBalance > 0
+                ? "border-amber-200 bg-amber-50 text-amber-900"
+                : "border-emerald-200 bg-emerald-50 text-emerald-900"
+            }`}
+          >
+            <p className="text-xs">Saldo total pendiente</p>
+            <p className="text-lg font-bold">{money(groupTotalPendingBalance)}</p>
           </div>
         </div>
       </article>
@@ -2475,24 +3379,40 @@ function GuestStayGroup({
                 </h3>
               </div>
 
-              <div className="grid min-w-0 gap-2 sm:grid-cols-3 xl:min-w-[420px]">
-                <div className="min-w-0 rounded-2xl border bg-muted/20 px-3 py-2">
-                  <p className="text-xs text-muted-foreground">Total</p>
-                  <p className="truncate font-bold">{money(total)}</p>
-                </div>
+              <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:min-w-[560px] xl:grid-cols-4">
                 <div className="min-w-0 rounded-2xl border bg-muted/20 px-3 py-2">
                   <p className="text-xs text-muted-foreground">Pagado</p>
                   <p className="truncate font-bold">{money(groupPaid)}</p>
                 </div>
                 <div
                   className={`min-w-0 rounded-2xl border px-3 py-2 ${
-                    groupBalance > 0
+                    groupRoomPendingBalance > 0
                       ? "border-amber-200 bg-amber-50 text-amber-900"
                       : "border-emerald-200 bg-emerald-50 text-emerald-900"
                   }`}
                 >
-                  <p className="text-xs">Saldo</p>
-                  <p className="truncate font-bold">{money(groupBalance)}</p>
+                  <p className="text-xs">Saldo habitación</p>
+                  <p className="truncate font-bold">{money(groupRoomPendingBalance)}</p>
+                </div>
+                <div
+                  className={`min-w-0 rounded-2xl border px-3 py-2 ${
+                    groupMinibarPendingBalance > 0
+                      ? "border-orange-200 bg-orange-50 text-orange-900"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-900"
+                  }`}
+                >
+                  <p className="text-xs">Snacks/minibar</p>
+                  <p className="truncate font-bold">{money(groupMinibarPendingBalance)}</p>
+                </div>
+                <div
+                  className={`min-w-0 rounded-2xl border px-3 py-2 ${
+                    groupTotalPendingBalance > 0
+                      ? "border-amber-200 bg-amber-50 text-amber-900"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-900"
+                  }`}
+                >
+                  <p className="text-xs">Saldo total</p>
+                  <p className="truncate font-bold">{money(groupTotalPendingBalance)}</p>
                 </div>
               </div>
 
@@ -2516,7 +3436,7 @@ function GuestStayGroup({
                           ? `Puedes registrar varios pagos hasta cubrir el saldo pendiente de las ${stays.length} habitaciones.`
                           : "La cuenta ya está cubierta. Este desglose es únicamente de consulta."
                     }
-                    total={total}
+                    total={groupCheckoutCloseTotal}
                     payments={groupPayments}
                     onChange={
                       mode === "checkin" || groupCheckoutPaymentsEditable
@@ -2528,10 +3448,67 @@ function GuestStayGroup({
                     allowCredit={Boolean(creditInfo)}
                     creditInfo={creditInfo}
                     readOnly={mode === "checkout" && !groupCheckoutPaymentsEditable}
+                    onBeforeAddPayment={
+                      showGroupAddPaymentChoice
+                        ? () => {
+                            setGroupAddPaymentChoiceOpen(true);
+                            return false;
+                          }
+                        : undefined
+                    }
                     showInvoiceStatus
                     className="mt-4"
                   />
                 ) : null}
+
+                {mode === "checkout" && groupCheckoutDraftPayments.length > 0 ? (
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-950">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold">Pagos pendientes de aplicar</p>
+                        <p className="text-xs text-amber-900/80">
+                          {groupCheckoutDraftPayments.length} pago(s) por {money(groupCheckoutDraftPaymentsTotal)}.
+                          No se enviarán a FEL ni al backend hasta presionar Aplicar pagos.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="shrink-0 rounded-full"
+                        onClick={onApplyGroupCheckoutPayments}
+                      >
+                        Aplicar pagos
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {mode === "checkout" ? (
+                  <div id={groupMinibarCardAnchorId}>
+                    <MinibarChargeCollectionCard
+                      stays={stays}
+                      saving={minibarChargeSaving}
+                      onConfirm={onConfirmGroupMinibarCharges}
+                      onInvoice={onInvoiceGroupMinibarCharges}
+                    />
+                  </div>
+                ) : null}
+
+                <AddPaymentChoiceDialog
+                  open={groupAddPaymentChoiceOpen}
+                  onOpenChange={setGroupAddPaymentChoiceOpen}
+                  onPayRoomBalance={() =>
+                    onGroupPaymentsChange(
+                      [...groupPayments, createPaymentRecord(groupStage)],
+                      groupStage,
+                    )
+                  }
+                  onPaySnacks={() => {
+                    document
+                      .getElementById(groupMinibarCardAnchorId)
+                      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  }}
+                />
 
                 <FelPaymentNotice
                   stay={groupPaymentProxy}
@@ -2540,6 +3517,17 @@ function GuestStayGroup({
                   minibarCharges={groupPaymentProxy.checkoutMinibarCharges}
                   onSend={() => onSendGroupToFel(groupStage)}
                 />
+
+                {mode === "checkout" ? (
+                  <MinibarFelNotice
+                    stays={stays}
+                    dispatches={groupFelDispatches}
+                    saving={minibarChargeSaving}
+                    onInvoice={onInvoiceGroupMinibarCharges}
+                  />
+                ) : null}
+
+                {groupBalanceWarning && groupBalance > 0.01 ? <PendingBalanceWarningBox /> : null}
 
                 {mode === "checkin" ? (
                   <div className="mt-5 grid gap-3 lg:grid-cols-2">
@@ -2645,6 +3633,12 @@ function GuestStayGroup({
               onPaymentsChange={(payments, stage) =>
                 onPaymentsChange(stay.id, payments, stage)
               }
+              onApplyCheckoutPayments={() =>
+                onApplyGroupCheckoutPayments?.()
+              }
+              onConfirmMinibarCharges={onConfirmGroupMinibarCharges}
+              onInvoiceMinibarCharges={() => onInvoiceGroupMinibarCharges?.()}
+              minibarChargeSaving={minibarChargeSaving}
               paymentsSaving={savingCheckInPaymentIds.has(stay.id)}
               felDispatches={dispatchesForFelStage(
                 felDispatches,
@@ -2672,6 +3666,7 @@ function GuestStayGroup({
               }
               onPrint={() => onPrint(stay)}
               creditInfo={creditInfo}
+              balanceWarning={balanceWarningKeys.has(stay.id)}
             />
           ))}
         </div>
@@ -2789,7 +3784,7 @@ function groupPaymentsForStays(stays: Stay[]) {
 function allocatePaymentsToStays(stays: Stay[], payments: PaymentRecord[]) {
   const buckets = stays.map((stay) => ({
     stay,
-    remaining: stayTotalDue(stay),
+    remaining: stay.total,
     payments: [] as PaymentRecord[],
   }));
 
@@ -2820,7 +3815,7 @@ function paymentsWithFallbackForBalance(
   stay: Stay,
   stage: "check-in" | "check-out",
 ) {
-  const balance = stayBalance(stay);
+  const balance = stayRoomPendingBalance(stay);
   if (balance <= 0) return stay.payments;
 
   return [
@@ -2876,10 +3871,9 @@ function defaultStayInvoiceBuyerName(stays: Stay[], guests: Guest[], taxId: stri
 function defaultStayInvoiceDescription(target: StayInvoiceTarget) {
   const codes = Array.from(new Set(target.stays.map(reservationCodeForGuest))).join(", ");
   const rooms = target.stays.map((stay) => stay.roomNumber).join(", ");
-  const extras = target.stays.reduce((sum, stay) => sum + stay.extraCharges, 0);
 
-  if (target.stage === "check-out" && extras > 0) {
-    return `Hospedaje y consumos checkout ${codes} hab. ${rooms}`;
+  if (invoiceKindForTarget(target) === "minibar") {
+    return `Snacks/minibar ${codes} hab. ${rooms}`;
   }
 
   return target.stage === "check-in"
@@ -2897,11 +3891,16 @@ function defaultStayInvoiceForm(
   const taxId = defaultInvoiceTaxId(target.stays, guests);
   const isFinalConsumer = taxId === "CF";
   const guest = invoicePrimaryGuest(target.stays, guests);
-  const serviceConcept = invoiceConceptForItemType(
-    concepts,
-    INVOICE_ITEM_TYPES.SERVICIO,
-  );
-  const invoiceablePayments = invoiceablePaymentsForStage(target.payments, dispatches);
+  const invoiceKind = invoiceKindForTarget(target);
+  const itemType =
+    invoiceKind === "minibar"
+      ? INVOICE_ITEM_TYPES.BIEN
+      : INVOICE_ITEM_TYPES.SERVICIO;
+  const defaultConcept = invoiceConceptForItemType(concepts, itemType);
+  const invoiceablePayments =
+    invoiceKind === "stay"
+      ? invoiceablePaymentsForStage(target.payments, dispatches)
+      : [];
   const preferredIds = preferredPaymentIds?.length
     ? new Set(preferredPaymentIds)
     : null;
@@ -2914,11 +3913,21 @@ function defaultStayInvoiceForm(
     : invoiceablePayments;
   const selectedPaymentIds = selectedPayments.map(paymentRecordKey);
   const selectedPaymentTotal = invoiceablePaymentTotal(selectedPayments, dispatches);
-  const selectedMinibarTotal =
-    target.stage === "check-out"
-      ? minibarChargeTotal(invoiceableMinibarCharges(target.minibarCharges, dispatches))
-      : 0;
-  const totalToInvoice = roundCurrency(selectedPaymentTotal + selectedMinibarTotal);
+  const selectedMinibarCharges =
+    invoiceKind === "minibar" && target.stage === "check-out"
+      ? minibarChargesForInvoiceSelection(
+          target.minibarCharges,
+          dispatches,
+          selectedPaymentTotal,
+          false,
+        )
+      : [];
+  const selectedMinibarTotal = minibarChargeTotal(selectedMinibarCharges);
+  const totalToInvoice = invoiceAmountForSelection(
+    selectedPaymentTotal,
+    selectedMinibarTotal,
+    selectedPayments.length > 0,
+  );
 
   return {
     useCustomerTaxInfo: true,
@@ -2932,12 +3941,16 @@ function defaultStayInvoiceForm(
     state: guest?.department ?? "Quetzaltenango",
     country: "GT",
     format: INVOICE_FORMATS.PDF_XML,
-    conceptId: serviceConcept ? String(serviceConcept.id) : "",
-    itemType: INVOICE_ITEM_TYPES.SERVICIO,
+    conceptId: defaultConcept ? String(defaultConcept.id) : "",
+    itemType,
     amountToInvoice: String(totalToInvoice),
     description: defaultStayInvoiceDescription(target),
-    notes: `Facturacion por pagos y consumos seleccionados: ${money(totalToInvoice)}`,
+    notes:
+      invoiceKind === "minibar"
+        ? `Facturacion separada de snacks/minibar: ${money(totalToInvoice)}`
+        : `Facturacion por pagos de estadia seleccionados: ${money(totalToInvoice)}`,
     selectedPaymentIds,
+    selectedMinibarChargeIds: selectedMinibarCharges.map((charge) => charge.id),
   };
 }
 
@@ -3112,7 +4125,8 @@ export function RecepcionCheckinPage() {
   const requestedTab =
     requestedTabParam === "checkout" ||
     requestedTabParam === "pagos-estadia" ||
-    requestedTabParam === "checkin"
+    requestedTabParam === "checkin" ||
+    requestedTabParam === "facturas-pendientes"
       ? requestedTabParam
       : requestedReservation
         ? "checkin"
@@ -3146,11 +4160,31 @@ export function RecepcionCheckinPage() {
   const [savingCheckInPaymentIds, setSavingCheckInPaymentIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [balanceWarningKeys, setBalanceWarningKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [checkoutSnapshots, setCheckoutSnapshots] = useState<CheckoutStaySnapshot[]>([]);
   const checkoutSnapshotsRef = useRef<CheckoutStaySnapshot[]>([]);
   const checkoutSnapshotsLoadedAtRef = useRef(0);
   const checkoutSnapshotsRequestRef = useRef<Promise<CheckoutStaySnapshot[] | null> | null>(null);
+  const [minibarPendingCharges, setMinibarPendingCharges] = useState<MinibarPendingCharge[]>([]);
+  const [minibarPendingChargesLoaded, setMinibarPendingChargesLoaded] = useState(false);
+  const minibarPendingChargesRequestRef = useRef<Promise<MinibarPendingCharge[] | null> | null>(null);
+  const [minibarStayCharges, setMinibarStayCharges] = useState<Record<string, CheckoutMinibarCharge[]>>({});
+  const [minibarChargeApplyTarget, setMinibarChargeApplyTarget] =
+    useState<MinibarChargeApplyTarget | null>(null);
+  const [minibarChargeApplying, setMinibarChargeApplying] = useState(false);
+  const [minibarChargePaymentForm, setMinibarChargePaymentForm] =
+    useState<MinibarChargePaymentForm>({
+      payment_method: "efectivo",
+      payment_reference: "",
+      responsible: "Recepción",
+      notes: "Cobro de snacks/minibar en recepción",
+    });
   const [invoiceTarget, setInvoiceTarget] = useState<StayInvoiceTarget | null>(null);
+  const [checkoutPaymentApplyTarget, setCheckoutPaymentApplyTarget] =
+    useState<CheckoutPaymentApplyTarget | null>(null);
+  const [checkoutPaymentApplying, setCheckoutPaymentApplying] = useState(false);
   const [invoiceForm, setInvoiceForm] = useState<StayInvoiceForm | null>(null);
   const [invoiceNitLookupStatus, setInvoiceNitLookupStatus] = useState<
     "idle" | "loading" | "found" | "not-found" | "error"
@@ -3162,7 +4196,10 @@ export function RecepcionCheckinPage() {
   const [issuedInvoiceResponse, setIssuedInvoiceResponse] = useState<unknown>(null);
   const [activeTab, setActiveTab] = useState(() => {
     const tab = searchParams.get("tab");
-    return tab === "checkout" || tab === "pagos-estadia" || tab === "checkin"
+    return tab === "checkout" ||
+      tab === "pagos-estadia" ||
+      tab === "checkin" ||
+      tab === "facturas-pendientes"
       ? tab
       : "checkin";
   });
@@ -3222,16 +4259,74 @@ export function RecepcionCheckinPage() {
     return request;
   }, []);
 
+  const loadMinibarPendingCharges = useCallback(async () => {
+    if (minibarPendingChargesRequestRef.current) {
+      return minibarPendingChargesRequestRef.current;
+    }
+
+    const request = api.minibar.listPendingCharges<unknown>()
+      .then((response) => {
+        const pendingCharges = apiArray(response)
+          .map(mapMinibarPendingCharge)
+          .filter((charge): charge is MinibarPendingCharge => Boolean(charge));
+        setMinibarPendingCharges(pendingCharges);
+        setMinibarPendingChargesLoaded(true);
+        return pendingCharges;
+      })
+      .catch(() => {
+        setMinibarPendingChargesLoaded(false);
+        return null;
+      })
+      .finally(() => {
+        if (minibarPendingChargesRequestRef.current === request) {
+          minibarPendingChargesRequestRef.current = null;
+        }
+      });
+
+    minibarPendingChargesRequestRef.current = request;
+    return request;
+  }, []);
+
+  const loadMinibarStayCharges = useCallback(async (stayIds: string[]) => {
+    const uniqueIds = Array.from(new Set(stayIds.filter(Boolean)));
+    if (uniqueIds.length === 0) return;
+
+    const results = await Promise.allSettled(
+      uniqueIds.map((stayId) =>
+        api.minibar
+          .listStayCharges<unknown>(stayId)
+          .then((response) => [stayId, mapMinibarStayCharges(response)] as const),
+      ),
+    );
+
+    setMinibarStayCharges((current) => {
+      const next = { ...current };
+      results.forEach((result) => {
+        if (result.status === "fulfilled") {
+          const [stayId, charges] = result.value;
+          next[stayId] = charges;
+        }
+      });
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
-    void loadCheckoutSnapshots({ force: true });
-  }, [loadCheckoutSnapshots]);
+    void loadCheckoutSnapshots({ force: true }).then((snapshots) => {
+      if (snapshots) void loadMinibarStayCharges(snapshots.map((snapshot) => snapshot.stayId));
+    });
+    void loadMinibarPendingCharges();
+  }, [loadCheckoutSnapshots, loadMinibarPendingCharges, loadMinibarStayCharges]);
 
 
   useEffect(() => {
     if (activeTab === "checkout") {
-      void loadCheckoutSnapshots({ force: false });
+      void loadCheckoutSnapshots({ force: false }).then((snapshots) => {
+        if (snapshots) void loadMinibarStayCharges(snapshots.map((snapshot) => snapshot.stayId));
+      });
+      void loadMinibarPendingCharges();
     }
-  }, [activeTab, loadCheckoutSnapshots]);
+  }, [activeTab, loadCheckoutSnapshots, loadMinibarPendingCharges, loadMinibarStayCharges]);
 
   useEffect(() => {
     if (!requestedTab) return;
@@ -3265,6 +4360,11 @@ export function RecepcionCheckinPage() {
   }, [invoiceForm?.taxId]);
 
 
+  const minibarPendingReviewIds = useMemo(
+    () => new Set(minibarPendingCharges.map((charge) => charge.reviewId)),
+    [minibarPendingCharges],
+  );
+
   const checkoutSnapshotByReservationId = useMemo(
     () =>
       new Map(
@@ -3294,7 +4394,37 @@ export function RecepcionCheckinPage() {
             checkoutSnapshotByReservationId.get(String(numericApiId(reservation.id) ?? ""));
           const localPayments = override.payments ?? paymentsForReservation(reservation, advances);
           const payments = mergeBackendPayments(localPayments, checkoutSnapshot?.payments ?? []);
-          const backendExtraCharges = checkoutSnapshot?.minibarTotalAmount ?? 0;
+          // El backend suma al paid_amount del stay lo que se cobra de minibar
+          // (chargePendingCharge con datos de pago) pero no agrega esa plata a la
+          // lista de payments del stay. Si solo sumáramos payments, "pagado" queda
+          // corto por ese monto y el checkout nunca se deja cerrar aunque el
+          // backend ya lo considere saldado. Usamos el máximo entre lo que el
+          // backend reporta como pagado y lo sumado localmente (esto último cubre
+          // abonos recién escritos que aún no se guardan en el backend).
+          const paid =
+            override.paid ??
+            Math.max(paymentTotal(payments), Number(checkoutSnapshot?.paidAmount ?? 0));
+          const backendExtraCharges = checkoutSnapshotMinibarAccountTotal(
+            checkoutSnapshot,
+            baseTotal,
+            paid,
+          );
+          // /api/check-out/in-house borra minibar_charges en cuanto se confirma el
+          // cobro (lo funde en el total del stay), así que usamos el historial de
+          // /api/minibar/stay/{stayId}/charges (minibarStayCharges) cuando ya cargó;
+          // ese sí conserva el consumo cobrado-pero-no-facturado para poder mostrarlo
+          // y facturarlo aparte. Mientras no haya cargado, usamos el snapshot como antes.
+          const stayChargeHistory = checkoutSnapshot?.stayId
+            ? minibarStayCharges[checkoutSnapshot.stayId]
+            : undefined;
+          const checkoutMinibarCharges =
+            stayChargeHistory ??
+            (checkoutSnapshot?.minibarCharges ?? []).map((charge) => ({
+              ...charge,
+              // Cargado significa listo para cobrar, NO pagado.
+              // Solo Cobrado, charged_at o payment_method real cuentan como cobrado.
+              isCharged: Boolean(charge.isCharged),
+            }));
 
           return {
             id: reservation.id,
@@ -3311,15 +4441,18 @@ export function RecepcionCheckinPage() {
             guests: people,
             checkIn: reservation.checkIn,
             checkOut: reservation.checkOut,
-            total: baseTotal,
-            paid: override.paid ?? paymentTotal(payments),
+            // El backend funde el minibar confirmado dentro de su propio "total" del
+            // stay (deja de listarlo aparte en minibar_charges). Si no usamos ese total
+            // aquí, el saldo de habitación queda desactualizado tras confirmar cobro.
+            total: checkoutSnapshot?.total ?? baseTotal,
+            paid,
             paidBeforeCheckIn: override.paidBeforeCheckIn,
             paidBeforeCheckOut: override.paidBeforeCheckOut,
             payments,
             paymentsBeforeCheckIn: override.paymentsBeforeCheckIn,
             paymentsBeforeCheckOut: override.paymentsBeforeCheckOut,
             extraCharges: Math.max(0, reservation.total - baseTotal, backendExtraCharges),
-            checkoutMinibarCharges: checkoutSnapshot?.minibarCharges,
+            checkoutMinibarCharges,
             status:
               override.status ??
               (checkoutSnapshot
@@ -3334,11 +4467,43 @@ export function RecepcionCheckinPage() {
       cancelledArrivalIds,
       checkoutSnapshotByReservationId,
       guests,
+      minibarPendingChargesLoaded,
+      minibarPendingReviewIds,
+      minibarStayCharges,
       reservations,
       roomTypes,
       stayOverrides,
       storeRooms,
     ],
+  );
+
+  // Estadías con checkout ya completado que nunca se enviaron a FEL. El backend
+  // no expone todavía un endpoint con el historial de pagos de una estadía ya
+  // cerrada, así que por ahora solo mostramos el listado; el botón "Facturar"
+  // queda deshabilitado hasta que ese endpoint exista.
+  const pendingInvoiceReservations = useMemo<PendingInvoiceEntry[]>(
+    () =>
+      reservations
+        .filter(
+          (reservation) =>
+            reservation.status === "checkout" &&
+            reservation.billingStatus === "NoFacturada",
+        )
+        .map((reservation) => {
+          const guest = guests.find((item) => item.id === reservation.guestId);
+          const room = storeRooms.find((item) => item.id === reservation.roomId);
+          return {
+            id: reservation.id,
+            code: reservation.code,
+            guestName: guest?.name ?? "Huésped",
+            roomNumber: room?.number ?? "-",
+            checkOut: reservation.checkOut,
+            total: reservation.total,
+            paid: reservation.paid,
+          };
+        })
+        .sort((a, b) => (a.checkOut < b.checkOut ? 1 : -1)),
+    [guests, reservations, storeRooms],
   );
 
   const rooms = useMemo<Room[]>(
@@ -3639,7 +4804,7 @@ export function RecepcionCheckinPage() {
   }, [groupedCheckoutReady, inHouse, requestedReservation, requestedTab]);
 
   const pendingCheckoutCharges = inHouse.reduce(
-    (sum, stay) => sum + stay.extraCharges,
+    (sum, stay) => sum + stayMinibarPendingBalance(stay),
     0,
   );
 
@@ -3810,7 +4975,7 @@ export function RecepcionCheckinPage() {
     const paymentIdsToDelete = selectedStay
       ? removableBackendPaymentIds(selectedStay.payments, payments, stageDispatches)
       : [];
-    const totalDue = selectedStay ? stayTotalDue(selectedStay) : 0;
+    const totalDue = selectedStay ? selectedStay.total : 0;
     const isPaid = paid >= totalDue && totalDue > 0;
 
     if (paymentIdsToDelete.length > 0) {
@@ -3894,7 +5059,7 @@ export function RecepcionCheckinPage() {
 
         const nextPayments = allocatedPayments.get(stay.id) ?? [];
         const paid = paymentTotal(nextPayments);
-        const isPaid = paid >= stayTotalDue(stay) && stayTotalDue(stay) > 0;
+        const isPaid = paid >= stay.total && stay.total > 0;
 
         return {
           ...stay,
@@ -3919,18 +5084,45 @@ export function RecepcionCheckinPage() {
     );
   }
 
+  function showPendingBalanceWarning(key: string, options?: { group?: boolean }) {
+    const warningKey = options?.group ? `group:${key}` : key;
+
+    setBalanceWarningKeys((current) => {
+      const next = new Set(current);
+      next.add(warningKey);
+      return next;
+    });
+
+
+    window.setTimeout(() => {
+      document
+        .getElementById(options?.group ? `stay-group-${key}` : `stay-card-${key}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 0);
+
+    toast.warning("Aún hay saldo pendiente de cancelar.", {
+      description:
+        "Registra primero el pago pendiente. Facturar es opcional; pagar el saldo sí es obligatorio.",
+    });
+  }
+
   function collectGroupCheckInBalance(
     groupKey: string,
     selectedStays: Stay[],
     payments: PaymentRecord[],
   ) {
-    const nextPayments = paymentsWithFallbackForGroupBalance(
-      selectedStays,
-      payments,
-      "check-in",
-    );
+    if (groupPaymentBalance(selectedStays, payments) > 0.01) {
+      showPendingBalanceWarning(groupKey, { group: true });
+      return;
+    }
 
-    updateGroupPayments(groupKey, selectedStays, nextPayments, "check-in");
+    patchChecklistMany(
+      selectedStays.map((stay) => stay.id),
+      {
+        paymentCollectedAtCheckIn: true,
+        paymentDeferredToCheckOut: false,
+      },
+    );
   }
 
   function deferGroupCheckInBalance(selectedStays: Stay[]) {
@@ -3950,13 +5142,21 @@ export function RecepcionCheckinPage() {
     selectedStays: Stay[],
     payments: PaymentRecord[],
   ) {
-    const nextPayments = paymentsWithFallbackForGroupBalance(
-      selectedStays,
-      payments,
-      "check-out",
+    const shouldUnmark = selectedStays.every(
+      (stay) => stay.checklist.paymentClosedAtCheckOut,
     );
 
-    updateGroupPayments(groupKey, selectedStays, nextPayments, "check-out");
+    if (!shouldUnmark && groupPaymentBalance(selectedStays, payments) > 0.01) {
+      showPendingBalanceWarning(groupKey, { group: true });
+      return;
+    }
+
+    patchChecklistMany(
+      selectedStays.map((stay) => stay.id),
+      {
+        paymentClosedAtCheckOut: !shouldUnmark,
+      },
+    );
   }
 
   async function checkoutStayApiId(stay: Stay) {
@@ -4254,57 +5454,77 @@ export function RecepcionCheckinPage() {
         });
         return null;
       }
-      validateCreditPayments(stay, unsavedPayments);
+      const snapshotsBeforePayment = (await loadCheckoutSnapshots({ force: true })) ?? [];
+      const checkoutPendingAmount = checkoutTotalPendingAmountFromSnapshot(
+        stay,
+        snapshotsBeforePayment,
+      );
+      const backendPaymentDrafts = checkoutPaymentsForBackendBalance(
+        unsavedPayments,
+        checkoutPendingAmount,
+      );
 
-      const response = await api.checkOut.closePayment<unknown>(stayId, {
-        payments: unsavedPayments.map(paymentPayload),
-        notes: `Pago guardado para facturacion checkout ${reservationCodeForGuest(stay)}.`,
-      });
-      chargedCredit =
-        (await syncCreditChargeForPayments(
-          stay,
-          unsavedPayments,
-          "CheckOut",
-          stayId,
-        )) || chargedCredit;
-      const references = checkoutPaymentReferencesFromResponse(response);
       let updatedStay = stay;
 
-      if (references.length >= unsavedPayments.length) {
-        const updates = unsavedPayments.map((payment, index) => ({
-          localId: payment.id,
-          backendId: references[index]!.id,
-          backendPaymentType: "stay" as const,
-        }));
-        updatedStay = applyCheckoutPaymentUpdatesToState(stay, updates);
-      } else {
-        const snapshots = await loadCheckoutSnapshots({ force: true });
-        const snapshot = snapshots?.find(
-          (item) => numericApiId(item.stayId) === stayId,
-        );
-        if (!snapshot) {
-          toast.error("El pago se envió, pero no se pudo actualizar la estadía.", {
-            description: "Recarga la pantalla antes de volver a intentar.",
-          });
-          return null;
+      if (backendPaymentDrafts.length > 0) {
+        const backendPayments = backendPaymentDrafts.map((draft) => draft.payment);
+        validateCreditPayments(stay, backendPayments);
+
+        const response = await api.checkOut.closePayment<unknown>(stayId, {
+          payments: backendPayments.map(paymentPayload),
+          notes: `Pago guardado para facturacion checkout ${reservationCodeForGuest(stay)}.`,
+        });
+        chargedCredit =
+          (await syncCreditChargeForPayments(
+            stay,
+            backendPayments,
+            "CheckOut",
+            stayId,
+          )) || chargedCredit;
+        const references = checkoutPaymentReferencesFromResponse(response);
+
+        if (references.length >= backendPaymentDrafts.length) {
+          const updates = backendPaymentDrafts.map((draft, index) => ({
+            localId: draft.source.id,
+            backendId: references[index]!.id,
+            backendPaymentType: "stay" as const,
+            pendingToInvoiceAmount: Number(draft.payment.amount || 0),
+          }));
+          updatedStay = applyCheckoutPaymentUpdatesToState(stay, updates);
+        } else {
+          const snapshots = await loadCheckoutSnapshots({ force: true });
+          const snapshot = snapshots?.find(
+            (item) => numericApiId(item.stayId) === stayId,
+          );
+          if (!snapshot) {
+            toast.error("El pago se envió, pero no se pudo actualizar la estadía.", {
+              description: "Recarga la pantalla antes de volver a intentar.",
+            });
+            return null;
+          }
+          const payments = reconcileStagePayments(
+            stay.payments,
+            snapshot.payments,
+            "check-out",
+          );
+          setStays((current) =>
+            current.map((item) =>
+              item.id === stay.id
+                ? { ...item, payments, paid: paymentTotal(payments) }
+                : item,
+            ),
+          );
+          updatedStay = {
+            ...stay,
+            payments,
+            paid: paymentTotal(payments),
+          };
         }
-        const payments = reconcileStagePayments(
-          stay.payments,
-          snapshot.payments,
-          "check-out",
-        );
-        setStays((current) =>
-          current.map((item) =>
-            item.id === stay.id
-              ? { ...item, payments, paid: paymentTotal(payments) }
-              : item,
-          ),
-        );
-        updatedStay = {
-          ...stay,
-          payments,
-          paid: paymentTotal(payments),
-        };
+      } else if (checkoutPendingAmount > 0.01) {
+        toast.error("No se pudo guardar el pago de checkout.", {
+          description: `El backend reporta saldo pendiente por ${money(checkoutPendingAmount)}, pero no hay pago nuevo para guardarlo.`,
+        });
+        return null;
       }
 
       updatedStays.push({
@@ -4320,6 +5540,163 @@ export function RecepcionCheckinPage() {
     return updatedStays;
   }
 
+  function requestApplyMinibarCharges(target: MinibarChargeApplyTarget) {
+    const uncollectedCharges = target.stays.flatMap(stayUncollectedMinibarCharges);
+    const chargeIds = minibarChargeIdsForCharges(uncollectedCharges);
+
+    if (uncollectedCharges.length === 0 || chargeIds.length === 0) {
+      toast.info("No hay consumos de snacks/minibar pendientes de cobro.");
+      return;
+    }
+
+    const roomNumbers = target.stays
+      .map((stay) => stay.roomNumber)
+      .filter(Boolean)
+      .join(", ");
+
+    setMinibarChargePaymentForm({
+      payment_method: "efectivo",
+      payment_reference: roomNumbers
+        ? `Snacks/minibar hab. ${roomNumbers}`
+        : "Snacks/minibar",
+      responsible: "Recepción",
+      notes: "Cobro de snacks/minibar en recepción",
+    });
+    setMinibarChargeApplyTarget(target);
+  }
+
+  async function confirmApplyMinibarCharges() {
+    if (!minibarChargeApplyTarget || minibarChargeApplying) return;
+
+    const uncollectedCharges = minibarChargeApplyTarget.stays.flatMap(stayUncollectedMinibarCharges);
+    const detailChargeIds = minibarChargeIdsForCharges(uncollectedCharges);
+    const freshPendingCharges = (await loadMinibarPendingCharges()) ?? minibarPendingCharges;
+    const chargeIds = minibarChargeEndpointIdsForCharges(
+      uncollectedCharges,
+      freshPendingCharges,
+    );
+    const fallbackDetailChargeIds = detailChargeIds.filter(
+      (chargeId) => !chargeIds.includes(chargeId),
+    );
+    const amountToApply = minibarChargeTotal(uncollectedCharges);
+
+    if (chargeIds.length === 0 && fallbackDetailChargeIds.length === 0) {
+      toast.error("No se encontró el consumo pendiente de minibar en backend.", {
+        description: "Actualiza la vista. Si el consumo ya fue cobrado, debería aparecer como disponible para FEL.",
+      });
+      return;
+    }
+
+    const paymentReference = minibarChargePaymentForm.payment_reference.trim();
+    const responsible = minibarChargePaymentForm.responsible.trim();
+    const notes = minibarChargePaymentForm.notes.trim();
+
+    if (!responsible) {
+      toast.error("Escribe quién recibió el pago de snacks/minibar.");
+      return;
+    }
+
+    const roomNumbers = minibarChargeApplyTarget.stays
+      .map((stay) => stay.roomNumber)
+      .filter(Boolean)
+      .join(", ");
+    const paymentBody = {
+      payment_method: minibarChargePaymentForm.payment_method,
+      payment_reference:
+        paymentReference ||
+        (roomNumbers ? `Snacks/minibar hab. ${roomNumbers}` : "Snacks/minibar"),
+      responsible,
+      notes: notes || "Cobro de snacks/minibar en recepción",
+    };
+
+    setMinibarChargeApplying(true);
+    try {
+      let chargedAnyEndpointId = false;
+      try {
+        for (const chargeId of chargeIds) {
+          await api.minibar.chargePendingCharge(chargeId, paymentBody);
+          chargedAnyEndpointId = true;
+        }
+      } catch (error) {
+        if (chargedAnyEndpointId || fallbackDetailChargeIds.length === 0) {
+          throw error;
+        }
+
+        for (const chargeId of fallbackDetailChargeIds) {
+          await api.minibar.chargePendingCharge(chargeId, paymentBody);
+        }
+      }
+
+      const chargedChargeIds = new Set(detailChargeIds);
+      setStays((current) =>
+        current.map((stay) =>
+          minibarChargeApplyTarget.stays.some((targetStay) => targetStay.id === stay.id)
+            ? {
+                ...stay,
+                checkoutMinibarCharges: (stay.checkoutMinibarCharges ?? []).map((charge) =>
+                  chargedChargeIds.has(charge.id)
+                    ? { ...charge, isCharged: true, status: "Cobrado" }
+                    : charge,
+                ),
+              }
+            : stay,
+        ),
+      );
+
+      const stayIdsToRefresh = minibarChargeApplyTarget.stays
+        .map((stay) => stay.backendStayId)
+        .filter((stayId): stayId is string => Boolean(stayId));
+
+      await Promise.all([
+        loadMinibarPendingCharges(),
+        loadCheckoutSnapshots({ force: true }),
+        loadMinibarStayCharges(stayIdsToRefresh),
+      ]);
+
+      toast.success("Cobro de snacks/minibar confirmado.", {
+        description: `${money(amountToApply)} marcado como cobrado y disponible para FEL.`,
+      });
+      setMinibarChargeApplyTarget(null);
+    } catch (error) {
+      toast.error("No se pudo confirmar el cobro de minibar.", {
+        description: getApiErrorMessage(error),
+      });
+    } finally {
+      setMinibarChargeApplying(false);
+    }
+  }
+
+  function requestApplyCheckoutPayments(target: CheckoutPaymentApplyTarget) {
+    if (!hasUnsavedCheckoutPayments(target.stays)) {
+      toast.info("No hay pagos nuevos de checkout para aplicar.");
+      return;
+    }
+
+    setCheckoutPaymentApplyTarget(target);
+  }
+
+  async function confirmApplyCheckoutPayments() {
+    if (!checkoutPaymentApplyTarget || checkoutPaymentApplying) return;
+
+    const amountToApply = unsavedCheckoutPaymentsTotal(checkoutPaymentApplyTarget.stays);
+    setCheckoutPaymentApplying(true);
+    try {
+      const savedStays = await ensureCheckoutPaymentsSaved(checkoutPaymentApplyTarget.stays);
+      if (!savedStays) return;
+
+      toast.success("Pagos de checkout aplicados.", {
+        description: `${money(amountToApply)} guardado en backend.`,
+      });
+      setCheckoutPaymentApplyTarget(null);
+    } catch (error) {
+      toast.error("No se pudieron aplicar los pagos de checkout.", {
+        description: getApiErrorMessage(error),
+      });
+    } finally {
+      setCheckoutPaymentApplying(false);
+    }
+  }
+
   async function loadStayInvoiceSupportData(target: StayInvoiceTarget) {
     setInvoiceLoading(true);
 
@@ -4329,23 +5706,22 @@ export function RecepcionCheckinPage() {
     ]);
 
     if (conceptsResult.status === "fulfilled") {
-      const concepts = apiArray(conceptsResult.value)
-        .map(mapInvoiceConceptOption)
-        .filter((concept): concept is InvoiceConceptOption => Boolean(concept));
-      const serviceConcept = invoiceConceptForItemType(
-        concepts,
-        INVOICE_ITEM_TYPES.SERVICIO,
-      );
+      const concepts = invoiceConceptOptionsFromResponse(conceptsResult.value);
+      const desiredItemType =
+        invoiceKindForTarget(target) === "minibar"
+          ? INVOICE_ITEM_TYPES.BIEN
+          : INVOICE_ITEM_TYPES.SERVICIO;
+      const defaultConcept = invoiceConceptForItemType(concepts, desiredItemType);
 
       setInvoiceConcepts(concepts);
 
-      if (serviceConcept) {
+      if (defaultConcept) {
         setInvoiceForm((current) =>
           current
             ? {
                 ...current,
-                conceptId: current.conceptId ? current.conceptId : String(serviceConcept.id),
-                itemType: serviceConcept.itemType as InvoiceItemType,
+                conceptId: current.conceptId ? current.conceptId : String(defaultConcept.id),
+                itemType: defaultConcept.itemType as InvoiceItemType,
               }
             : current,
         );
@@ -4372,22 +5748,38 @@ export function RecepcionCheckinPage() {
     preferredPaymentIds?: string[],
   ) {
     const dispatches = dispatchesForFelStage(felDispatches, target.key, target.stage);
+    const invoiceKind = invoiceKindForTarget(target);
     const availableAmount = targetInvoiceAvailableAmount(target, dispatches);
-    const invoiceablePayments = invoiceablePaymentsForStage(target.payments, dispatches);
+    const invoiceablePayments =
+      invoiceKind === "stay"
+        ? invoiceablePaymentsForStage(target.payments, dispatches)
+        : [];
     const invoiceableMinibar =
-      target.stage === "check-out"
+      invoiceKind === "minibar" && target.stage === "check-out"
         ? invoiceableMinibarCharges(target.minibarCharges, dispatches)
         : [];
 
     if (availableAmount <= 0) {
-      toast.info("No hay monto pendiente para facturar en esta etapa.");
+      toast.info(
+        invoiceKind === "minibar"
+          ? "No hay snacks/minibar cobrados pendientes de facturar."
+          : "No hay monto pendiente para facturar en esta etapa.",
+      );
       return;
     }
 
     if (invoiceablePayments.length === 0 && invoiceableMinibar.length === 0) {
-      toast.error("No hay pagos guardados para facturar.", {
-        description: "Guarda el pago primero o genera comprobante sin factura.",
-      });
+      toast.error(
+        invoiceKind === "minibar"
+          ? "No hay consumos de snacks/minibar cobrados para facturar."
+          : "No hay pagos guardados para facturar.",
+        {
+          description:
+            invoiceKind === "minibar"
+              ? "Primero confirma el cobro de snacks/minibar y vuelve a intentar."
+              : "Guarda el pago primero o genera comprobante sin factura.",
+        },
+      );
       return;
     }
 
@@ -4487,20 +5879,74 @@ export function RecepcionCheckinPage() {
       ).filter((candidate) =>
         selectedIds.has(paymentRecordKey(candidate)),
       );
-      const selectedMinibarTotal =
-        invoiceTarget.stage === "check-out"
-          ? minibarChargeTotal(
-              invoiceableMinibarCharges(invoiceTarget.minibarCharges, dispatches),
+      const selectedPaymentTotal = invoiceablePaymentTotal(selectedPayments, dispatches);
+      const selectedMinibarChargeIds = new Set(current.selectedMinibarChargeIds);
+      const selectedMinibarCharges =
+        invoiceKindForTarget(invoiceTarget) === "minibar" && invoiceTarget.stage === "check-out"
+          ? invoiceableMinibarCharges(invoiceTarget.minibarCharges, dispatches).filter((charge) =>
+              selectedMinibarChargeIds.has(charge.id),
             )
-          : 0;
+          : [];
+      const selectedMinibarTotal = minibarChargeTotal(selectedMinibarCharges);
 
       return {
         ...current,
         selectedPaymentIds,
         amountToInvoice: String(
-          roundCurrency(
-            invoiceablePaymentTotal(selectedPayments, dispatches) +
-              selectedMinibarTotal,
+          invoiceAmountForSelection(
+            selectedPaymentTotal,
+            selectedMinibarTotal,
+            selectedPayments.length > 0,
+          ),
+        ),
+      };
+    });
+  }
+
+  function toggleStayInvoiceMinibarCharge(charge: CheckoutMinibarCharge, checked: boolean) {
+    if (!invoiceTarget) return;
+
+    setInvoiceForm((current) => {
+      if (!current) return current;
+
+      const selectedIds = new Set(current.selectedMinibarChargeIds);
+      if (checked) {
+        selectedIds.add(charge.id);
+      } else {
+        selectedIds.delete(charge.id);
+      }
+
+      const dispatches = dispatchesForFelStage(
+        felDispatches,
+        invoiceTarget.key,
+        invoiceTarget.stage,
+      );
+      const selectedPaymentIds = new Set(current.selectedPaymentIds);
+      const selectedPayments =
+        invoiceKindForTarget(invoiceTarget) === "stay"
+          ? invoiceablePaymentsForStage(
+              invoiceTarget.payments,
+              dispatches,
+            ).filter((candidate) =>
+              selectedPaymentIds.has(paymentRecordKey(candidate)),
+            )
+          : [];
+      const selectedPaymentTotal = invoiceablePaymentTotal(selectedPayments, dispatches);
+      const selectedMinibarChargeIds = Array.from(selectedIds);
+      const selectedMinibarCharges = invoiceableMinibarCharges(
+        invoiceTarget.minibarCharges,
+        dispatches,
+      ).filter((candidate) => selectedIds.has(candidate.id));
+      const selectedMinibarTotal = minibarChargeTotal(selectedMinibarCharges);
+
+      return {
+        ...current,
+        selectedMinibarChargeIds,
+        amountToInvoice: String(
+          invoiceAmountForSelection(
+            selectedPaymentTotal,
+            selectedMinibarTotal,
+            selectedPayments.length > 0,
           ),
         ),
       };
@@ -4516,6 +5962,16 @@ export function RecepcionCheckinPage() {
 
     if (sourceModule === INVOICE_SOURCE_MODULES.RESERVATION) {
       return primaryReservationId;
+    }
+
+    if (sourceModule === INVOICE_SOURCE_MODULES.MINIBAR) {
+      const firstReviewId = target.minibarCharges
+        .map((charge) => numericApiId(charge.reviewId))
+        .find((id): id is number => id !== null);
+      const firstDetailId = target.minibarCharges
+        .map((charge) => numericApiId(charge.id))
+        .find((id): id is number => id !== null);
+      return firstReviewId ?? firstDetailId ?? primaryStayId ?? primaryReservationId;
     }
 
     if (primaryStayId) {
@@ -4545,18 +6001,29 @@ export function RecepcionCheckinPage() {
       invoiceTarget.key,
       invoiceTarget.stage,
     );
+    const invoiceKind = invoiceKindForTarget(invoiceTarget);
     const selectedPaymentIds = new Set(invoiceForm.selectedPaymentIds);
-    const selectedPayments = invoiceablePaymentsForStage(
-      invoiceTarget.payments,
-      dispatches,
-    ).filter((payment) => selectedPaymentIds.has(paymentRecordKey(payment)));
+    const selectedPayments =
+      invoiceKind === "stay"
+        ? invoiceablePaymentsForStage(
+            invoiceTarget.payments,
+            dispatches,
+          ).filter((payment) => selectedPaymentIds.has(paymentRecordKey(payment)))
+        : [];
     const selectedPaymentTotal = invoiceablePaymentTotal(selectedPayments, dispatches);
+    const selectedMinibarChargeIds = new Set(invoiceForm.selectedMinibarChargeIds);
     const selectedMinibarCharges =
-      invoiceTarget.stage === "check-out"
-        ? invoiceableMinibarCharges(invoiceTarget.minibarCharges, dispatches)
+      invoiceKind === "minibar" && invoiceTarget.stage === "check-out"
+        ? invoiceableMinibarCharges(invoiceTarget.minibarCharges, dispatches).filter((charge) =>
+            selectedMinibarChargeIds.has(charge.id),
+          )
         : [];
     const selectedMinibarTotal = minibarChargeTotal(selectedMinibarCharges);
-    const selectedAvailableAmount = roundCurrency(selectedPaymentTotal + selectedMinibarTotal);
+    const selectedAvailableAmount = invoiceAmountForSelection(
+      selectedPaymentTotal,
+      selectedMinibarTotal,
+      selectedPayments.length > 0,
+    );
     const amountToInvoice = roundCurrency(Number(invoiceForm.amountToInvoice));
     const availableAmount = targetInvoiceAvailableAmount(invoiceTarget, dispatches);
     const guestId = numericApiId(invoiceTarget.stays[0]?.guestId);
@@ -4570,7 +6037,7 @@ export function RecepcionCheckinPage() {
     const description = invoiceForm.description.trim();
 
     const itemTypeForPayload =
-      selectedPayments.length === 0 && selectedMinibarCharges.length > 0
+      invoiceKind === "minibar"
         ? INVOICE_ITEM_TYPES.BIEN
         : INVOICE_ITEM_TYPES.SERVICIO;
     const conceptId =
@@ -4635,14 +6102,152 @@ export function RecepcionCheckinPage() {
     });
 
     const hasStayPayments = stayPaymentIds.length > 0;
+    const isMinibarOnlyInvoice =
+      selectedPayments.length === 0 && minibarReviewDetailIds.length > 0;
+
+    // El backend solo acepta detalles de minibar de UNA sola revisión por factura
+    // (el source_id de una factura "Minibar" es el id_minibar_room_review; mezclar
+    // detalles de dos revisiones distintas responde "Uno o más consumos de minibar
+    // no existen"). Si el usuario seleccionó consumos de más de una revisión,
+    // emitimos una factura por cada revisión en vez de una sola combinada.
+    const reviewGroups = new Map<string, CheckoutMinibarCharge[]>();
+    selectedMinibarCharges.forEach((charge) => {
+      const key = charge.reviewId ?? charge.id;
+      reviewGroups.set(key, [...(reviewGroups.get(key) ?? []), charge]);
+    });
+
+    if (isMinibarOnlyInvoice && reviewGroups.size > 1) {
+      setInvoiceSubmitting(true);
+      const issuedInvoiceIds: string[] = [];
+      const invoicedChargeIds = new Set<string>();
+      let lastResponse: unknown = null;
+
+      try {
+        for (const [reviewId, charges] of reviewGroups) {
+          const groupAmount = minibarChargeTotal(charges);
+          const groupDetailIds = charges
+            .map((charge) => numericApiId(charge.id))
+            .filter((detailId): detailId is number => detailId !== null);
+          const groupSourceId = numericApiId(reviewId) ?? groupDetailIds[0];
+          if (!groupSourceId || groupDetailIds.length === 0) continue;
+
+          const groupPayload: IssueInvoiceModel = {
+            source_module: INVOICE_SOURCE_MODULES.MINIBAR,
+            source_id: groupSourceId,
+            id_guest: guestId,
+            buyer: {
+              taxId,
+              name: buyerNameForPayload,
+              address: invoiceForm.address.trim() || "CIUDAD",
+              city: invoiceForm.city.trim() || "09001",
+              district: invoiceForm.district.trim() || "Quetzaltenango",
+              state: invoiceForm.state.trim() || "Quetzaltenango",
+              country: invoiceForm.country.trim() || "GT",
+            },
+            format: INVOICE_FORMATS.PDF_XML,
+            billing_mode: INVOICE_BILLING_MODES.BY_PAYMENTS,
+            reservation_payment_ids: [],
+            stay_payment_ids: [],
+            event_payment_ids: [],
+            minibar_review_detail_ids: groupDetailIds,
+            items: [
+              {
+                id_invoice_concept: conceptId,
+                item_type: itemTypeForPayload,
+                description,
+                quantity: 1,
+                unit_price_with_tax: groupAmount,
+                notes: invoiceForm.notes.trim() || null,
+              },
+            ],
+          };
+
+          const response = await api.invoices.issue<unknown>(groupPayload);
+          lastResponse = response;
+          const groupInvoiceId = invoiceIdFromResponse(response);
+          if (groupInvoiceId) issuedInvoiceIds.push(groupInvoiceId);
+          charges.forEach((charge) => invoicedChargeIds.add(charge.id));
+
+          setFelDispatches((current) => [
+            {
+              id: `fel-${invoiceTarget.key}-${invoiceTarget.stage}-${reviewId}-${Date.now()}`,
+              stayId: invoiceTarget.key,
+              stage: invoiceTarget.stage,
+              kind: "Pago total",
+              amount: groupAmount,
+              paymentIds: [],
+              paymentAllocations: {},
+              minibarReviewDetailIds: charges.map((charge) => charge.id),
+              createdAt: new Date().toLocaleString("es-GT", {
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+              invoiceId: groupInvoiceId,
+              buyerName: buyerNameForPayload,
+              buyerTaxId: taxId,
+              billingMode: INVOICE_BILLING_MODES.BY_PAYMENTS,
+            },
+            ...current,
+          ]);
+        }
+
+        setStays((current) =>
+          current.map((stay) =>
+            invoiceTarget.stays.some((targetStay) => targetStay.id === stay.id)
+              ? {
+                  ...stay,
+                  checkoutMinibarCharges: (stay.checkoutMinibarCharges ?? []).map((charge) =>
+                    invoicedChargeIds.has(charge.id)
+                      ? { ...charge, isCharged: true, isInvoiced: true }
+                      : charge,
+                  ),
+                }
+              : stay,
+          ),
+        );
+
+        setIssuedInvoiceResponse(lastResponse);
+        toast.success(
+          issuedInvoiceIds.length > 1 ? "Facturas emitidas" : "Factura emitida",
+          {
+            description: `${issuedInvoiceIds.length} factura(s) de snacks/minibar - ${money(amountToInvoice)}`,
+          },
+        );
+
+        void api.checkOut.listInHouse<unknown>().then((snapshotResponse) => {
+          const snapshots = apiArray(snapshotResponse)
+            .map(mapCheckoutStaySnapshot)
+            .filter((snapshot): snapshot is CheckoutStaySnapshot => Boolean(snapshot));
+          setCheckoutSnapshots(snapshots);
+        });
+        const refreshStayIds = invoiceTarget.stays
+          .map((stay) => stay.backendStayId)
+          .filter((stayId): stayId is string => Boolean(stayId));
+        void loadMinibarStayCharges(refreshStayIds);
+      } catch (error) {
+        toast.error("No se pudo emitir la factura.", {
+          description: getApiErrorMessage(error),
+        });
+      } finally {
+        setInvoiceSubmitting(false);
+      }
+
+      return;
+    }
+
     const sourceModule =
-      invoiceTarget.stage === "check-out"
-        ? INVOICE_SOURCE_MODULES.CHECK_OUT
-        : hasStayPayments
-          ? INVOICE_SOURCE_MODULES.CHECK_IN
-          : reservationPaymentIds.length > 0
-            ? INVOICE_SOURCE_MODULES.RESERVATION
-            : INVOICE_SOURCE_MODULES.MINIBAR;
+      isMinibarOnlyInvoice
+        ? INVOICE_SOURCE_MODULES.MINIBAR
+        : invoiceTarget.stage === "check-out"
+          ? INVOICE_SOURCE_MODULES.CHECK_OUT
+          : hasStayPayments
+            ? INVOICE_SOURCE_MODULES.CHECK_IN
+            : reservationPaymentIds.length > 0
+              ? INVOICE_SOURCE_MODULES.RESERVATION
+              : INVOICE_SOURCE_MODULES.MINIBAR;
     setInvoiceSubmitting(true);
     const sourceId = await invoiceSourceIdForTarget(invoiceTarget, sourceModule);
 
@@ -4699,7 +6304,7 @@ export function RecepcionCheckinPage() {
         paymentAllocations: Object.fromEntries(
           selectedPayments.map((payment) => [
             paymentRecordKey(payment),
-            Number(payment.amount || 0),
+            paymentInvoiceableAmount(payment, dispatches),
           ]),
         ),
         minibarReviewDetailIds: selectedMinibarCharges.map((charge) => charge.id),
@@ -4720,6 +6325,9 @@ export function RecepcionCheckinPage() {
       const invoicedPaymentIds = new Set(
         selectedPayments.map(paymentRecordKey),
       );
+      const invoicedMinibarChargeIds = new Set(
+        selectedMinibarCharges.map((charge) => charge.id),
+      );
       const invoicedAt = new Date().toISOString();
       setStays((current) =>
         current.map((stay) =>
@@ -4732,11 +6340,21 @@ export function RecepcionCheckinPage() {
                         ...payment,
                         isInvoiced: true,
                         invoiceId,
-                        invoicedAmount: payment.amount,
+                        invoicedAmount: paymentInvoiceableAmount(payment, dispatches),
                         pendingToInvoiceAmount: 0,
                         invoicedAt,
                       }
                     : payment,
+                ),
+                checkoutMinibarCharges: (stay.checkoutMinibarCharges ?? []).map((charge) =>
+                  invoicedMinibarChargeIds.has(charge.id)
+                    ? {
+                        ...charge,
+                        isCharged: true,
+                        isInvoiced: true,
+                        invoiceId,
+                      }
+                    : charge,
                 ),
               }
             : stay,
@@ -4762,6 +6380,12 @@ export function RecepcionCheckinPage() {
             .filter((snapshot): snapshot is CheckoutStaySnapshot => Boolean(snapshot));
           setCheckoutSnapshots(snapshots);
         });
+        if (invoicedMinibarChargeIds.size > 0) {
+          const invoicedStayIds = invoiceTarget.stays
+            .map((stay) => stay.backendStayId)
+            .filter((stayId): stayId is string => Boolean(stayId));
+          void loadMinibarStayCharges(invoicedStayIds);
+        }
       }
     } catch (error) {
       toast.error("No se pudo emitir la factura.", {
@@ -4798,17 +6422,7 @@ export function RecepcionCheckinPage() {
     const amount = preferredPayment
       ? Number(preferredPayment.amount || 0)
       : paymentTotal(payments);
-    const minibarCharges =
-      stage === "check-out" && !preferredPaymentId
-        ? checkoutMinibarChargesForStays([stay])
-        : [];
-    const minibarAmount = minibarChargeTotal(
-      invoiceableMinibarCharges(
-        minibarCharges,
-        dispatchesForFelStage(felDispatches, stay.id, stage),
-      ),
-    );
-    if (amount <= 0 && minibarAmount <= 0) {
+    if (amount <= 0) {
       toast.error("No hay pago para enviar a FEL", {
         description: `Registra un abono o pago total en ${stage === "check-in" ? "check-in" : "check-out"}.`,
       });
@@ -4825,11 +6439,19 @@ export function RecepcionCheckinPage() {
       return;
     }
 
+    if (stage === "check-out" && hasUnsavedCheckoutPayments([stay])) {
+      toast.error("Primero aplica los pagos de checkout.", {
+        description: "Facturar pendiente ya no guarda pagos automáticamente. Aplica los pagos, confirma el desglose y luego envía a FEL.",
+      });
+      requestApplyCheckoutPayments({ key: stay.id, stays: [stay] });
+      return;
+    }
+
     let targetStays: Stay[] | null;
     try {
       targetStays =
         stage === "check-out"
-          ? await ensureCheckoutPaymentsSaved([stay])
+          ? [stay]
           : await ensureCheckInPaymentsSaved([stay]);
     } catch (error) {
       toast.error("No se pudieron guardar los pagos antes de facturar.", {
@@ -4850,10 +6472,8 @@ export function RecepcionCheckinPage() {
       stage,
       stays: [targetStay],
       payments: targetStagePayments,
-      minibarCharges:
-        stage === "check-out" && !preferredPaymentId
-          ? checkoutMinibarChargesForStays([targetStay])
-          : [],
+      minibarCharges: [],
+      invoiceKind: "stay",
     }, resolvedPreferredPaymentId ? [resolvedPreferredPaymentId] : undefined);
 
   }
@@ -4876,16 +6496,7 @@ export function RecepcionCheckinPage() {
       ? targetPaymentsFromStays
       : stagePayments;
     const amount = paymentTotal(targetPaymentsFromStays) || paymentTotal(stagePayments);
-    const minibarCharges =
-      stage === "check-out" ? checkoutMinibarChargesForStays(selectedStays) : [];
-    const minibarAmount = minibarChargeTotal(
-      invoiceableMinibarCharges(
-        minibarCharges,
-        dispatchesForFelStage(felDispatches, groupKey, stage),
-      ),
-    );
-
-    if (amount <= 0 && minibarAmount <= 0) {
+    if (amount <= 0) {
       toast.error("No hay pago para enviar a FEL", {
         description: `Registra un abono o pago total en ${stage === "check-in" ? "check-in" : "check-out"}.`,
       });
@@ -4905,11 +6516,19 @@ export function RecepcionCheckinPage() {
       return;
     }
 
+    if (stage === "check-out" && hasUnsavedCheckoutPayments(selectedStays)) {
+      toast.error("Primero aplica los pagos de checkout del grupo.", {
+        description: "Facturar pendiente ya no guarda pagos automáticamente. Aplica los pagos, confirma el desglose y luego envía a FEL.",
+      });
+      requestApplyCheckoutPayments({ key: groupKey, stays: selectedStays });
+      return;
+    }
+
     let targetStays: Stay[] | null;
     try {
       targetStays =
         stage === "check-out"
-          ? await ensureCheckoutPaymentsSaved(selectedStays)
+          ? selectedStays
           : await ensureCheckInPaymentsSaved(selectedStays);
     } catch (error) {
       toast.error("No se pudieron guardar los pagos antes de facturar.", {
@@ -4939,10 +6558,36 @@ export function RecepcionCheckinPage() {
       stage,
       stays: targetStays,
       payments: targetPayments,
-      minibarCharges:
-        stage === "check-out" ? checkoutMinibarChargesForStays(targetStays) : [],
+      minibarCharges: [],
+      invoiceKind: "stay",
     });
 
+  }
+
+  function sendMinibarChargesToFel(key: string, selectedStays: Stay[]) {
+    const stage: FelPaymentStage = "check-out";
+    const dispatches = dispatchesForFelStage(felDispatches, key, stage);
+    const minibarCharges = invoiceableMinibarCharges(
+      checkoutMinibarChargesForStays(selectedStays),
+      dispatches,
+    );
+    const minibarAmount = minibarChargeTotal(minibarCharges);
+
+    if (minibarAmount <= 0.01) {
+      toast.info("No hay snacks/minibar cobrados pendientes de facturar.", {
+        description: "Primero confirma el cobro de minibar o actualiza la vista.",
+      });
+      return;
+    }
+
+    openStayInvoice({
+      key,
+      stage,
+      stays: selectedStays,
+      payments: [],
+      minibarCharges,
+      invoiceKind: "minibar",
+    });
   }
 
   function handleCheckInPaymentDecision(
@@ -4950,105 +6595,45 @@ export function RecepcionCheckinPage() {
     decision: "collect-now" | "defer-to-checkout",
   ) {
     const selectedStay = stays.find((stay) => stay.id === stayId);
-    if (selectedStay) {
-      const nextPayments =
-        decision === "collect-now"
-          ? selectedStay.checklist.paymentCollectedAtCheckIn
-            ? selectedStay.paymentsBeforeCheckIn ?? selectedStay.payments
-            : paymentsWithFallbackForBalance(selectedStay, "check-in")
-          : selectedStay.checklist.paymentCollectedAtCheckIn
-            ? selectedStay.paymentsBeforeCheckIn ?? selectedStay.payments
-            : selectedStay.payments;
-      const nextPaid =
-        decision === "collect-now" && !selectedStay.checklist.paymentCollectedAtCheckIn
-          ? paymentTotal(nextPayments)
-          : selectedStay.checklist.paymentCollectedAtCheckIn
-            ? selectedStay.paidBeforeCheckIn ?? selectedStay.paid
-            : selectedStay.paid;
-      const isUnmarking =
-        decision === "collect-now"
-          ? selectedStay.checklist.paymentCollectedAtCheckIn
-          : selectedStay.checklist.paymentDeferredToCheckOut;
-      if (decision === "collect-now" && !isUnmarking) {
-        queueUnsavedCheckInPayments(
-          stayId,
-          selectedStay.payments,
-          nextPayments,
-          "check-in",
-        );
+    if (!selectedStay) return;
+
+    if (decision === "collect-now") {
+      const shouldUnmark = selectedStay.checklist.paymentCollectedAtCheckIn;
+
+      if (!shouldUnmark && stayBalance(selectedStay) > 0.01) {
+        showPendingBalanceWarning(stayId);
+        return;
       }
 
-      // La decisión del saldo se mantiene local mientras recepción prepara el check-in.
-      // Se envía al backend en POST /api/check-in/{reservationId}/complete junto con los pagos nuevos.
-      // Evitamos llamar payment-decision aquí porque en backend local responde 404 y rompe el flujo.
-      void nextPaid;
+      setStays((current) =>
+        current.map((stay) => {
+          if (stay.id !== stayId) return stay;
+
+          return {
+            ...stay,
+            checklist: {
+              ...stay.checklist,
+              paymentCollectedAtCheckIn: !shouldUnmark,
+              paymentDeferredToCheckOut: false,
+            },
+          };
+        }),
+      );
+      return;
     }
+
+    const shouldUnmark = selectedStay.checklist.paymentDeferredToCheckOut;
 
     setStays((current) =>
       current.map((stay) => {
         if (stay.id !== stayId) return stay;
 
-        if (decision === "collect-now") {
-          if (stay.checklist.paymentCollectedAtCheckIn) {
-            const restoredPayments = stay.paymentsBeforeCheckIn ?? stay.payments;
-            return {
-              ...stay,
-              paid: stay.paidBeforeCheckIn ?? stay.paid,
-              payments: restoredPayments,
-              paidBeforeCheckIn: undefined,
-              paymentsBeforeCheckIn: undefined,
-              checklist: {
-                ...stay.checklist,
-                paymentCollectedAtCheckIn: false,
-                paymentDeferredToCheckOut: false,
-              },
-            };
-          }
-
-          const nextPayments = paymentsWithFallbackForBalance(stay, "check-in");
-          return {
-            ...stay,
-            paidBeforeCheckIn: stay.paidBeforeCheckIn ?? stay.paid,
-            paymentsBeforeCheckIn: stay.paymentsBeforeCheckIn ?? stay.payments,
-            paid: paymentTotal(nextPayments),
-            payments: nextPayments,
-            checklist: {
-              ...stay.checklist,
-              paymentCollectedAtCheckIn: true,
-              paymentDeferredToCheckOut: false,
-            },
-          };
-        }
-
-        if (stay.checklist.paymentDeferredToCheckOut) {
-          return {
-            ...stay,
-            checklist: {
-              ...stay.checklist,
-              paymentCollectedAtCheckIn: false,
-              paymentDeferredToCheckOut: false,
-            },
-          };
-        }
-
         return {
           ...stay,
-          paid:
-            stay.checklist.paymentCollectedAtCheckIn &&
-            stay.paidBeforeCheckIn !== undefined
-              ? stay.paidBeforeCheckIn
-              : stay.paid,
-          payments:
-            stay.checklist.paymentCollectedAtCheckIn &&
-            stay.paymentsBeforeCheckIn !== undefined
-              ? stay.paymentsBeforeCheckIn
-              : stay.payments,
-          paidBeforeCheckIn: undefined,
-          paymentsBeforeCheckIn: undefined,
           checklist: {
             ...stay.checklist,
             paymentCollectedAtCheckIn: false,
-            paymentDeferredToCheckOut: true,
+            paymentDeferredToCheckOut: !shouldUnmark,
           },
         };
       }),
@@ -5090,52 +6675,24 @@ export function RecepcionCheckinPage() {
 
   function closePaymentAtCheckOut(stayId: string) {
     const selectedStay = stays.find((stay) => stay.id === stayId);
-    if (selectedStay) {
-      const shouldUnmark = selectedStay.checklist.paymentClosedAtCheckOut;
-      const nextPayments = shouldUnmark
-        ? selectedStay.paymentsBeforeCheckOut ?? selectedStay.payments
-        : paymentsWithFallbackForBalance(selectedStay, "check-out");
-      dispatch({
-        type: "RES_UPDATE",
-        id: stayId,
-        patch: {
-          paid: shouldUnmark
-            ? selectedStay.paidBeforeCheckOut ?? selectedStay.paid
-            : paymentTotal(nextPayments),
-          payments: nextPayments,
-        },
-      });
+    if (!selectedStay) return;
+
+    const shouldUnmark = selectedStay.checklist.paymentClosedAtCheckOut;
+
+    if (!shouldUnmark && stayBalance(selectedStay) > 0.01) {
+      showPendingBalanceWarning(stayId);
+      return;
     }
 
     setStays((current) =>
       current.map((stay) => {
         if (stay.id !== stayId) return stay;
 
-        if (stay.checklist.paymentClosedAtCheckOut) {
-          return {
-            ...stay,
-            paid: stay.paidBeforeCheckOut ?? stay.paid,
-            payments: stay.paymentsBeforeCheckOut ?? stay.payments,
-            paidBeforeCheckOut: undefined,
-            paymentsBeforeCheckOut: undefined,
-            checklist: {
-              ...stay.checklist,
-              paymentClosedAtCheckOut: false,
-            },
-          };
-        }
-
-        const nextPayments = paymentsWithFallbackForBalance(stay, "check-out");
-
         return {
           ...stay,
-          paidBeforeCheckOut: stay.paidBeforeCheckOut ?? stay.paid,
-          paymentsBeforeCheckOut: stay.paymentsBeforeCheckOut ?? stay.payments,
-          paid: paymentTotal(nextPayments),
-          payments: nextPayments,
           checklist: {
             ...stay.checklist,
-            paymentClosedAtCheckOut: true,
+            paymentClosedAtCheckOut: !shouldUnmark,
           },
         };
       }),
@@ -5201,227 +6758,82 @@ export function RecepcionCheckinPage() {
     decision: "collect-now" | "defer-to-checkout",
   ) {
     const ids = new Set(stayIds);
-    const selectedBeforeChange = stays.filter((stay) => ids.has(stay.id));
-    const shouldUnmarkBeforeChange = selectedBeforeChange.every((stay) =>
-      decision === "collect-now"
-        ? stay.checklist.paymentCollectedAtCheckIn
-        : stay.checklist.paymentDeferredToCheckOut,
-    );
+    const selectedStays = stays.filter((stay) => ids.has(stay.id));
 
-    selectedBeforeChange.forEach((stay) => {
-      let nextPayments = stay.payments;
-      let nextPaid = stay.paid;
+    if (decision === "collect-now") {
+      const shouldUnmark = selectedStays.every(
+        (stay) => stay.checklist.paymentCollectedAtCheckIn,
+      );
+      const pendingStay = selectedStays.find((stay) => stayBalance(stay) > 0.01);
 
-      if (shouldUnmarkBeforeChange) {
-        nextPayments =
-          stay.checklist.paymentCollectedAtCheckIn && stay.paymentsBeforeCheckIn
-            ? stay.paymentsBeforeCheckIn
-            : stay.payments;
-        nextPaid =
-          stay.checklist.paymentCollectedAtCheckIn && stay.paidBeforeCheckIn !== undefined
-            ? stay.paidBeforeCheckIn
-            : stay.paid;
-      } else if (decision === "collect-now" && !stayIsPaidInFull(stay)) {
-        nextPayments = paymentsWithFallbackForBalance(stay, "check-in");
-        nextPaid = paymentTotal(nextPayments);
-      } else if (decision === "defer-to-checkout" && stay.checklist.paymentCollectedAtCheckIn) {
-        nextPayments = stay.paymentsBeforeCheckIn ?? stay.payments;
-        nextPaid = stay.paidBeforeCheckIn ?? stay.paid;
-      }
-
-      if (shouldUnmarkBeforeChange) {
-        dispatch({
-          type: "RES_UPDATE",
-          id: stay.id,
-          patch: {
-            paid: nextPaid,
-            payments: nextPayments,
-          },
-        });
+      if (!shouldUnmark && pendingStay) {
+        showPendingBalanceWarning(pendingStay.id);
         return;
       }
 
-      if (decision === "collect-now") {
-        queueUnsavedCheckInPayments(
-          stay.id,
-          stay.payments,
-          nextPayments,
-          "check-in",
-        );
-      }
+      setStays((current) =>
+        current.map((stay) => {
+          if (!ids.has(stay.id)) return stay;
 
-      dispatch({
-        type: "RES_UPDATE",
-        id: stay.id,
-        patch: {
-          paid: nextPaid,
-          payments: nextPayments,
-        },
-      });
-    });
-
-    setStays((current) => {
-      const selected = current.filter((stay) => ids.has(stay.id));
-      const shouldUnmark = selected.every((stay) =>
-        decision === "collect-now"
-          ? stay.checklist.paymentCollectedAtCheckIn
-          : stay.checklist.paymentDeferredToCheckOut,
+          return {
+            ...stay,
+            checklist: {
+              ...stay.checklist,
+              paymentCollectedAtCheckIn: !shouldUnmark,
+              paymentDeferredToCheckOut: false,
+            },
+          };
+        }),
       );
+      return;
+    }
 
-      return current.map((stay) => {
+    const shouldUnmark = selectedStays.every(
+      (stay) => stay.checklist.paymentDeferredToCheckOut,
+    );
+
+    setStays((current) =>
+      current.map((stay) => {
         if (!ids.has(stay.id)) return stay;
-
-        if (shouldUnmark) {
-          return {
-            ...stay,
-            paid:
-              stay.checklist.paymentCollectedAtCheckIn &&
-              stay.paidBeforeCheckIn !== undefined
-                ? stay.paidBeforeCheckIn
-                : stay.paid,
-            payments:
-              stay.checklist.paymentCollectedAtCheckIn &&
-              stay.paymentsBeforeCheckIn !== undefined
-                ? stay.paymentsBeforeCheckIn
-                : stay.payments,
-            paidBeforeCheckIn:
-              stay.checklist.paymentCollectedAtCheckIn
-                ? undefined
-                : stay.paidBeforeCheckIn,
-            paymentsBeforeCheckIn:
-              stay.checklist.paymentCollectedAtCheckIn
-                ? undefined
-                : stay.paymentsBeforeCheckIn,
-            checklist: {
-              ...stay.checklist,
-              paymentCollectedAtCheckIn: false,
-              paymentDeferredToCheckOut: false,
-            },
-          };
-        }
-
-        if (stayIsPaidInFull(stay) && !stay.checklist.paymentCollectedAtCheckIn) {
-          return stay;
-        }
-
-        if (decision === "collect-now") {
-          const nextPayments = paymentsWithFallbackForBalance(stay, "check-in");
-          return {
-            ...stay,
-            paidBeforeCheckIn: stay.paidBeforeCheckIn ?? stay.paid,
-            paymentsBeforeCheckIn: stay.paymentsBeforeCheckIn ?? stay.payments,
-            paid: paymentTotal(nextPayments),
-            payments: nextPayments,
-            checklist: {
-              ...stay.checklist,
-              paymentCollectedAtCheckIn: true,
-              paymentDeferredToCheckOut: false,
-            },
-          };
-        }
 
         return {
           ...stay,
-          paid:
-            stay.checklist.paymentCollectedAtCheckIn &&
-            stay.paidBeforeCheckIn !== undefined
-              ? stay.paidBeforeCheckIn
-              : stay.paid,
-          payments:
-            stay.checklist.paymentCollectedAtCheckIn &&
-            stay.paymentsBeforeCheckIn !== undefined
-              ? stay.paymentsBeforeCheckIn
-              : stay.payments,
-          paidBeforeCheckIn: undefined,
-          paymentsBeforeCheckIn: undefined,
           checklist: {
             ...stay.checklist,
             paymentCollectedAtCheckIn: false,
-            paymentDeferredToCheckOut: true,
+            paymentDeferredToCheckOut: !shouldUnmark,
           },
         };
-      });
-    });
+      }),
+    );
   }
 
   function closePaymentAtCheckOutForMany(stayIds: string[]) {
     const ids = new Set(stayIds);
-    const selectedBeforeChange = stays.filter((stay) => ids.has(stay.id));
-    const shouldUnmarkBeforeChange = selectedBeforeChange.every(
+    const selectedStays = stays.filter((stay) => ids.has(stay.id));
+    const shouldUnmark = selectedStays.every(
       (stay) => stay.checklist.paymentClosedAtCheckOut,
     );
+    const pendingStay = selectedStays.find((stay) => stayBalance(stay) > 0.01);
 
-    selectedBeforeChange.forEach((stay) => {
-      const nextPayments = shouldUnmarkBeforeChange
-        ? stay.paymentsBeforeCheckOut ?? stay.payments
-        : paymentsWithFallbackForBalance(stay, "check-out");
-      dispatch({
-        type: "RES_UPDATE",
-        id: stay.id,
-        patch: {
-          paid: shouldUnmarkBeforeChange
-            ? stay.paidBeforeCheckOut ?? stay.paid
-            : paymentTotal(nextPayments),
-          payments: nextPayments,
-        },
-      });
-    });
+    if (!shouldUnmark && pendingStay) {
+      showPendingBalanceWarning(pendingStay.id);
+      return;
+    }
 
-    setStays((current) => {
-      const selected = current.filter((stay) => ids.has(stay.id));
-      const shouldUnmark = selected.every(
-        (stay) => stay.checklist.paymentClosedAtCheckOut,
-      );
-
-      return current.map((stay) => {
+    setStays((current) =>
+      current.map((stay) => {
         if (!ids.has(stay.id)) return stay;
 
-        if (shouldUnmark) {
-          return {
-            ...stay,
-            paid:
-              stay.checklist.paymentClosedAtCheckOut &&
-              stay.paidBeforeCheckOut !== undefined
-                ? stay.paidBeforeCheckOut
-                : stay.paid,
-            payments:
-              stay.checklist.paymentClosedAtCheckOut &&
-              stay.paymentsBeforeCheckOut !== undefined
-                ? stay.paymentsBeforeCheckOut
-                : stay.payments,
-            paidBeforeCheckOut:
-              stay.checklist.paymentClosedAtCheckOut
-                ? undefined
-                : stay.paidBeforeCheckOut,
-            paymentsBeforeCheckOut:
-              stay.checklist.paymentClosedAtCheckOut
-                ? undefined
-                : stay.paymentsBeforeCheckOut,
-            checklist: {
-              ...stay.checklist,
-              paymentClosedAtCheckOut: false,
-            },
-          };
-        }
-
-        if (stayIsPaidInFull(stay) && !stay.checklist.paymentClosedAtCheckOut) {
-          return stay;
-        }
-
-        const nextPayments = paymentsWithFallbackForBalance(stay, "check-out");
         return {
           ...stay,
-          paidBeforeCheckOut: stay.paidBeforeCheckOut ?? stay.paid,
-          paymentsBeforeCheckOut: stay.paymentsBeforeCheckOut ?? stay.payments,
-          paid: paymentTotal(nextPayments),
-          payments: nextPayments,
           checklist: {
             ...stay.checklist,
-            paymentClosedAtCheckOut: true,
+            paymentClosedAtCheckOut: !shouldUnmark,
           },
         };
-      });
-    });
+      }),
+    );
   }
 
   function markStayReadyForCheckOut(stay: Stay) {
@@ -5449,6 +6861,12 @@ export function RecepcionCheckinPage() {
     const stay = stays.find((item) => item.id === stayId);
     if (!stay) return;
     if (!stayReadyForCheckIn(stay, cashInvoicePreferences)) return;
+
+    const confirmed = window.confirm(
+      `¿Estás seguro de que quieres completar el check-in de ${stay.guestName} en la habitación ${stay.roomNumber}?`,
+    );
+    if (!confirmed) return;
+
     const reservationId = numericApiId(stay.id);
     if (!reservationId) {
       toast.error("No se encontró el identificador de la reservación.");
@@ -5579,6 +6997,11 @@ export function RecepcionCheckinPage() {
     ) {
       return;
     }
+
+    const confirmed = window.confirm(
+      `¿Estás seguro de que quieres completar el check-in conjunto de ${selectedStays.length} habitación(es)?`,
+    );
+    if (!confirmed) return;
 
     const staysByReservation = new Map<number, Stay[]>();
     selectedStays.forEach((stay) => {
@@ -5721,6 +7144,11 @@ export function RecepcionCheckinPage() {
     if (!stay) return;
     if (!stayReadyForCheckOut(stay)) return;
 
+    const confirmed = window.confirm(
+      `¿Estás seguro de que quieres finalizar el check-out de ${stay.guestName} en la habitación ${stay.roomNumber}?`,
+    );
+    if (!confirmed) return;
+
     try {
       // El pago final se registra primero en close-payment, tal como exige el
       // contrato de checkout. Solo después se completa la salida.
@@ -5736,7 +7164,7 @@ export function RecepcionCheckinPage() {
       await api.checkOut.complete(backendStayId, {
         key_received: savedStay.checklist.keyReturned,
         consumptions_reviewed: savedStay.checklist.chargesReviewed,
-        final_balance_pending: stayBalance(savedStay) > 0,
+        final_balance_pending: stayTotalPendingBalance(savedStay) > 0.01,
         tv_control_received: savedStay.checklist.remoteReturned,
         room_reviewed: savedStay.checklist.roomInspection,
         notes: "Check-out completado desde recepción.",
@@ -5784,6 +7212,11 @@ export function RecepcionCheckinPage() {
     const selectedStays = stays.filter((stay) => ids.has(stay.id));
     if (!groupReadyForCheckOut(selectedStays, groupPayments)) return;
 
+    const confirmed = window.confirm(
+      `¿Estás seguro de que quieres finalizar el check-out conjunto de ${selectedStays.length} habitación(es)?`,
+    );
+    if (!confirmed) return;
+
     try {
       const savedStays = await ensureCheckoutPaymentsSaved(selectedStays);
       if (!savedStays) return;
@@ -5803,7 +7236,7 @@ export function RecepcionCheckinPage() {
         await api.checkOut.complete(backendStayId, {
           key_received: stay.checklist.keyReturned,
           consumptions_reviewed: stay.checklist.chargesReviewed,
-          final_balance_pending: stayBalance(stay) > 0,
+          final_balance_pending: stayTotalPendingBalance(stay) > 0.01,
           tv_control_received: stay.checklist.remoteReturned,
           room_reviewed: stay.checklist.roomInspection,
           notes: "Check-out conjunto completado desde recepción.",
@@ -5901,9 +7334,9 @@ export function RecepcionCheckinPage() {
               <div class="box"><div class="label">Habitación</div><div class="value">${stay.roomNumber} · ${stay.roomType}</div></div>
               <div class="box"><div class="label">Fechas</div><div class="value">${formatDate(stay.checkIn)} → ${formatDate(stay.checkOut)}</div></div>
               <div class="box"><div class="label">Total estadía</div><div class="value">${money(stay.total)}</div></div>
-              <div class="box"><div class="label">Extras</div><div class="value">${money(stay.extraCharges)}</div></div>
+              <div class="box"><div class="label">Saldo snacks/minibar</div><div class="value">${money(stayMinibarPendingBalance(stay))}</div></div>
               <div class="box"><div class="label">Pagado</div><div class="value">${money(stay.paid)}</div></div>
-              <div class="box"><div class="label">Saldo</div><div class="value">${money(stayBalance(stay))}</div></div>
+              <div class="box"><div class="label">Saldo total pendiente</div><div class="value">${money(stayTotalPendingBalance(stay))}</div></div>
               <div class="box" style="grid-column: 1 / -1;"><div class="label">Desglose de pagos</div><div class="value">${paymentNotes(stay.payments)}</div></div>
             </div>
           </div>
@@ -5915,23 +7348,20 @@ export function RecepcionCheckinPage() {
     win.document.close();
   }
 
+  const activeInvoiceKind = invoiceKindForTarget(invoiceTarget);
   const activeInvoiceDispatches = invoiceTarget
     ? dispatchesForFelStage(felDispatches, invoiceTarget.key, invoiceTarget.stage)
     : [];
-  const activeInvoiceablePayments = invoiceTarget
+  const activeInvoiceablePayments = invoiceTarget && activeInvoiceKind === "stay"
     ? invoiceablePaymentsForStage(invoiceTarget.payments, activeInvoiceDispatches)
     : [];
-  const activeSavedInvoicePayments = invoiceTarget
+  const activeSavedInvoicePayments = invoiceTarget && activeInvoiceKind === "stay"
     ? invoiceTarget.payments.filter(
         (payment) =>
           Number(payment.amount || 0) > 0 &&
           numericApiId(payment.id) !== null,
       )
     : [];
-  const activeInvoiceableMinibarCharges =
-    invoiceTarget?.stage === "check-out"
-      ? invoiceableMinibarCharges(invoiceTarget.minibarCharges, activeInvoiceDispatches)
-      : [];
   const activeSelectedPaymentIds = new Set(invoiceForm?.selectedPaymentIds ?? []);
   const activeSelectedInvoicePayments = activeInvoiceablePayments.filter((payment) =>
     activeSelectedPaymentIds.has(paymentRecordKey(payment)),
@@ -5939,12 +7369,22 @@ export function RecepcionCheckinPage() {
   const activeSelectedInvoiceTotal = roundCurrency(
     invoiceablePaymentTotal(activeSelectedInvoicePayments, activeInvoiceDispatches),
   );
-  const activeMinibarInvoiceTotal = minibarChargeTotal(activeInvoiceableMinibarCharges);
+  const activeInvoiceableMinibarCharges =
+    invoiceTarget?.stage === "check-out" && activeInvoiceKind === "minibar"
+      ? invoiceableMinibarCharges(invoiceTarget.minibarCharges, activeInvoiceDispatches)
+      : [];
+  const activeSelectedMinibarChargeIds = new Set(invoiceForm?.selectedMinibarChargeIds ?? []);
+  const activeSelectedMinibarCharges = activeInvoiceableMinibarCharges.filter((charge) =>
+    activeSelectedMinibarChargeIds.has(charge.id),
+  );
+  const activeMinibarInvoiceTotal = minibarChargeTotal(activeSelectedMinibarCharges);
   const activeInvoiceAvailableAmount = invoiceTarget
     ? targetInvoiceAvailableAmount(invoiceTarget, activeInvoiceDispatches)
     : 0;
-  const activeSelectedAvailableAmount = roundCurrency(
-    activeSelectedInvoiceTotal + activeMinibarInvoiceTotal,
+  const activeSelectedAvailableAmount = invoiceAmountForSelection(
+    activeSelectedInvoiceTotal,
+    activeMinibarInvoiceTotal,
+    activeSelectedInvoicePayments.length > 0,
   );
   const activeInvoiceAmount = invoiceForm
     ? roundCurrency(Number(invoiceForm.amountToInvoice))
@@ -5957,7 +7397,7 @@ export function RecepcionCheckinPage() {
     Number.isFinite(activeInvoiceAmount) &&
     activeInvoiceAmount > 0 &&
     Math.abs(activeInvoiceAmount - activeSelectedAvailableAmount) <= 0.01 &&
-    (activeSelectedInvoicePayments.length > 0 || activeInvoiceableMinibarCharges.length > 0);
+    (activeSelectedInvoicePayments.length > 0 || activeSelectedMinibarCharges.length > 0);
   const issuedInvoiceFields = issuedInvoiceResponse
     ? invoiceResponseFields(issuedInvoiceResponse)
     : [];
@@ -5966,6 +7406,7 @@ export function RecepcionCheckinPage() {
 
   return (
     <div className="space-y-6">
+      <BalanceWarningStyle />
       <PageHeader
         eyebrow="Recepción"
         title="Check-in / Check-out"
@@ -6000,9 +7441,9 @@ export function RecepcionCheckinPage() {
           tone="success"
         />
         <MetricCard
-          label="Extras pendientes"
+          label="Snacks/minibar pendientes"
           value={money(pendingCheckoutCharges)}
-          helper="Snacks, daños u otros cargos"
+          helper="Pendiente de snacks y minibar"
           icon={Receipt}
           tone="warning"
         />
@@ -6020,6 +7461,14 @@ export function RecepcionCheckinPage() {
           <TabsTrigger value="checkin">Check-in</TabsTrigger>
           <TabsTrigger value="pagos-estadia">Estadías actuales</TabsTrigger>
           <TabsTrigger value="checkout">Check-out</TabsTrigger>
+          <TabsTrigger value="facturas-pendientes">
+            Facturas pendientes
+            {pendingInvoiceReservations.length > 0 ? (
+              <span className="ml-2 rounded-full bg-amber-500/90 px-2 py-0.5 text-[11px] font-bold text-white">
+                {pendingInvoiceReservations.length}
+              </span>
+            ) : null}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="checkin" className="space-y-4">
@@ -6074,10 +7523,21 @@ export function RecepcionCheckinPage() {
                       onUndoCheckInPayment={undoCheckInPayment}
                       onPaymentsChange={updateStayPayments}
                       savingCheckInPaymentIds={savingCheckInPaymentIds}
+                      balanceWarningKeys={balanceWarningKeys}
                       groupPayments={groupPayments}
                       onGroupPaymentsChange={(payments, stage) =>
                         updateGroupPayments(groupKey, group.stays, payments, stage)
                       }
+                      onApplyGroupCheckoutPayments={() =>
+                        requestApplyCheckoutPayments({ key: groupKey, stays: group.stays })
+                      }
+                      onConfirmGroupMinibarCharges={() =>
+                        requestApplyMinibarCharges({ key: groupKey, stays: group.stays })
+                      }
+                      onInvoiceGroupMinibarCharges={() =>
+                        sendMinibarChargesToFel(groupKey, group.stays)
+                      }
+                      minibarChargeSaving={minibarChargeApplying}
                       felDispatches={felDispatches}
                       cashInvoicePreferences={cashInvoicePreferences}
                       onSendToFel={sendStayPaymentToFel}
@@ -6149,9 +7609,20 @@ export function RecepcionCheckinPage() {
                   const stayPayments = stay.payments.filter(
                     (payment) => payment.stage !== "check-out",
                   );
+                  const roomPendingBalance = stayRoomPendingBalance(stay);
+                  const minibarPendingBalance = stayMinibarPendingBalance(stay);
+                  const totalPendingBalance = stayTotalPendingBalance(stay);
 
                   return (
-                    <article key={stay.id} className="rounded-3xl border bg-background p-4 shadow-sm">
+                    <article
+                      key={stay.id}
+                      id={`stay-card-${stay.id}`}
+                      className={`rounded-3xl border bg-background p-4 shadow-sm ${
+                        balanceWarningKeys.has(stay.id) && totalPendingBalance > 0.01
+                          ? "balance-warning-shake-once ring-2 ring-red-300 ring-offset-2"
+                          : ""
+                      }`}
+                    >
                       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                         <div>
                           <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
@@ -6163,9 +7634,37 @@ export function RecepcionCheckinPage() {
                           </p>
                         </div>
                         <div className="flex flex-col gap-2 sm:items-end">
-                          <div className="rounded-2xl border bg-muted/20 px-4 py-3 text-sm">
-                            <p className="text-xs text-muted-foreground">Saldo actual</p>
-                            <p className="text-lg font-bold">{money(stayBalance(stay))}</p>
+                          <div className="grid w-full gap-2 sm:grid-cols-3 lg:w-auto">
+                            <div
+                              className={`rounded-2xl border px-4 py-3 text-sm ${
+                                roomPendingBalance > 0
+                                  ? "border-amber-200 bg-amber-50 text-amber-900"
+                                  : "border-emerald-200 bg-emerald-50 text-emerald-900"
+                              }`}
+                            >
+                              <p className="text-xs">Saldo habitación</p>
+                              <p className="text-lg font-bold">{money(roomPendingBalance)}</p>
+                            </div>
+                            <div
+                              className={`rounded-2xl border px-4 py-3 text-sm ${
+                                minibarPendingBalance > 0
+                                  ? "border-orange-200 bg-orange-50 text-orange-900"
+                                  : "border-emerald-200 bg-emerald-50 text-emerald-900"
+                              }`}
+                            >
+                              <p className="text-xs">Snacks/minibar</p>
+                              <p className="text-lg font-bold">{money(minibarPendingBalance)}</p>
+                            </div>
+                            <div
+                              className={`rounded-2xl border px-4 py-3 text-sm ${
+                                totalPendingBalance > 0
+                                  ? "border-amber-200 bg-amber-50 text-amber-900"
+                                  : "border-emerald-200 bg-emerald-50 text-emerald-900"
+                              }`}
+                            >
+                              <p className="text-xs">Saldo total</p>
+                              <p className="text-lg font-bold">{money(totalPendingBalance)}</p>
+                            </div>
                           </div>
                           {checkoutReadyStayIds.has(stay.id) ? (
                             <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-800">
@@ -6179,11 +7678,15 @@ export function RecepcionCheckinPage() {
                         </div>
                       </div>
 
+                      {balanceWarningKeys.has(stay.id) && totalPendingBalance > 0.01 ? (
+                        <PendingBalanceWarningBox />
+                      ) : null}
+
                       <div className="mt-4">
                         <PaymentBreakdownCard
                           title="Abonos durante la estadía"
                           description="Agrega el pago y presiona Guardar pago. El backend usado es /api/reservations/{id}/night-payments."
-                          total={stayTotalDue(stay)}
+                          total={stay.total}
                           payments={stayPayments}
                           onChange={(payments) =>
                             updateStayPayments(
@@ -6209,6 +7712,8 @@ export function RecepcionCheckinPage() {
                           applyLabel={savingCheckInPaymentIds.has(stay.id) ? "Guardando..." : "Guardar pago"}
                           onApplyPayment={(payment) => void saveInHouseNightPayment(stay.id, payment)}
                           readOnly={savingCheckInPaymentIds.has(stay.id)}
+                          onInvoicePayment={(payment) => void sendStayPaymentToFel(stay.id, "check-in", payment.id)}
+                          invoicePaymentLabel="Facturar"
                         />
                       </div>
 
@@ -6293,10 +7798,21 @@ export function RecepcionCheckinPage() {
                       onUndoCheckInPayment={undoCheckInPayment}
                       onPaymentsChange={updateStayPayments}
                       savingCheckInPaymentIds={savingCheckInPaymentIds}
+                      balanceWarningKeys={balanceWarningKeys}
                       groupPayments={groupPayments}
                       onGroupPaymentsChange={(payments, stage) =>
                         updateGroupPayments(groupKey, group.stays, payments, stage)
                       }
+                      onApplyGroupCheckoutPayments={() =>
+                        requestApplyCheckoutPayments({ key: groupKey, stays: group.stays })
+                      }
+                      onConfirmGroupMinibarCharges={() =>
+                        requestApplyMinibarCharges({ key: groupKey, stays: group.stays })
+                      }
+                      onInvoiceGroupMinibarCharges={() =>
+                        sendMinibarChargesToFel(groupKey, group.stays)
+                      }
+                      minibarChargeSaving={minibarChargeApplying}
                       felDispatches={felDispatches}
                       cashInvoicePreferences={cashInvoicePreferences}
                       onSendToFel={sendStayPaymentToFel}
@@ -6340,6 +7856,53 @@ export function RecepcionCheckinPage() {
           </Panel>
         </TabsContent>
 
+        <TabsContent value="facturas-pendientes" className="space-y-4">
+          <Panel
+            title="Facturas pendientes"
+            description="Estadías con checkout completado que nunca se enviaron a FEL. La facturación desde aquí está pendiente de que backend exponga el historial de pagos de una estadía ya cerrada."
+          >
+            <div className="space-y-3">
+              {pendingInvoiceReservations.length === 0 ? (
+                <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  No hay estadías con checkout completado pendientes de facturar.
+                </div>
+              ) : (
+                pendingInvoiceReservations.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="flex flex-col gap-3 rounded-2xl border bg-background p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold">{entry.guestName}</span>
+                        <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground">
+                          Habitación {entry.roomNumber}
+                        </span>
+                        <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground">
+                          {entry.code}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Checkout: {formatDate(entry.checkOut)} · Total {money(entry.total)} · Pagado {money(entry.paid)}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="gap-2 rounded-full"
+                      disabled
+                      title="Pendiente de habilitar: falta un endpoint de backend que devuelva el historial de pagos de una estadía con checkout ya completado."
+                    >
+                      <Receipt className="size-4" />
+                      Facturar (pendiente de backend)
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </Panel>
+        </TabsContent>
 
       </Tabs>
 
@@ -6401,13 +7964,244 @@ export function RecepcionCheckinPage() {
         </DialogContent>
       </Dialog>
 
+      <AlertDialog
+        open={Boolean(minibarChargeApplyTarget)}
+        onOpenChange={(open) => {
+          if (!open && !minibarChargeApplying) setMinibarChargeApplyTarget(null);
+        }}
+      >
+        <AlertDialogContent className="rounded-3xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar cobro de snacks / minibar</AlertDialogTitle>
+            <AlertDialogDescription>
+              Estos consumos se marcarán como cobrados en backend con el endpoint real de minibar.
+              Después quedarán disponibles para incluirse en FEL.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {minibarChargeApplyTarget ? (
+            <div className="space-y-3 rounded-2xl border bg-muted/20 p-4 text-sm">
+              {minibarChargeApplyTarget.stays.map((stay) => {
+                const charges = stayUncollectedMinibarCharges(stay);
+                if (charges.length === 0) return null;
+
+                return (
+                  <div key={stay.id} className="space-y-2">
+                    <div className="flex items-center justify-between gap-3 font-semibold">
+                      <span>Habitación {stay.roomNumber}</span>
+                      <span>{money(minibarChargeTotal(charges))}</span>
+                    </div>
+                    {charges.map((charge) => (
+                      <div
+                        key={`${charge.reviewId ?? "sin-review"}-${charge.id}`}
+                        className="flex items-center justify-between gap-3 rounded-xl bg-background px-3 py-2"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate">{charge.description}</span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {charge.quantity ? `${charge.quantity} x ${money(charge.unitPrice ?? 0)} · ` : ""}
+                            Revisión {charge.reviewId ?? "N/D"}
+                          </span>
+                        </span>
+                        <strong className="shrink-0">{money(Number(charge.amount || 0))}</strong>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+              <div className="flex items-center justify-between border-t pt-3 text-base font-bold">
+                <span>Total a confirmar</span>
+                <span>{money(minibarChargeTotal(minibarChargeApplyTarget.stays.flatMap(stayUncollectedMinibarCharges)))}</span>
+              </div>
+
+              <div className="grid gap-3 rounded-2xl border bg-background p-4 text-sm">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      Método de pago
+                    </span>
+                    <select
+                      className="h-10 w-full rounded-2xl border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      value={minibarChargePaymentForm.payment_method}
+                      disabled={minibarChargeApplying}
+                      onChange={(event) =>
+                        setMinibarChargePaymentForm((current) => ({
+                          ...current,
+                          payment_method: event.target.value as MinibarChargePaymentForm["payment_method"],
+                        }))
+                      }
+                    >
+                      <option value="efectivo">Efectivo</option>
+                      <option value="tarjeta">Tarjeta</option>
+                      <option value="transferencia">Transferencia</option>
+                      <option value="deposito">Depósito</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      Responsable
+                    </span>
+                    <TextInput
+                      value={minibarChargePaymentForm.responsible}
+                      disabled={minibarChargeApplying}
+                      onChange={(event) =>
+                        setMinibarChargePaymentForm((current) => ({
+                          ...current,
+                          responsible: event.target.value,
+                        }))
+                      }
+                      placeholder="Recepción"
+                    />
+                  </label>
+                </div>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold text-muted-foreground">
+                    Referencia de pago
+                  </span>
+                  <TextInput
+                    value={minibarChargePaymentForm.payment_reference}
+                    disabled={minibarChargeApplying}
+                    onChange={(event) =>
+                      setMinibarChargePaymentForm((current) => ({
+                        ...current,
+                        payment_reference: event.target.value,
+                      }))
+                    }
+                    placeholder="Voucher POS, transferencia, efectivo en caja..."
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold text-muted-foreground">
+                    Notas
+                  </span>
+                  <textarea
+                    className="min-h-20 w-full rounded-2xl border bg-background px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    value={minibarChargePaymentForm.notes}
+                    disabled={minibarChargeApplying}
+                    onChange={(event) =>
+                      setMinibarChargePaymentForm((current) => ({
+                        ...current,
+                        notes: event.target.value,
+                      }))
+                    }
+                    placeholder="Cobro de snacks/minibar en recepción"
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              className="rounded-full"
+              disabled={minibarChargeApplying}
+            >
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="rounded-full"
+              disabled={minibarChargeApplying}
+              onClick={(event) => {
+                event.preventDefault();
+                void confirmApplyMinibarCharges();
+              }}
+            >
+              {minibarChargeApplying ? "Confirmando..." : "Sí, confirmar cobro"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={Boolean(checkoutPaymentApplyTarget)}
+        onOpenChange={(open) => {
+          if (!open && !checkoutPaymentApplying) setCheckoutPaymentApplyTarget(null);
+        }}
+      >
+        <AlertDialogContent className="rounded-3xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Aplicar pagos de checkout</AlertDialogTitle>
+            <AlertDialogDescription>
+              Estos pagos se guardarán en backend y ya no deberán editarse desde checkout.
+              Revisa el desglose antes de continuar.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {checkoutPaymentApplyTarget ? (
+            <div className="space-y-3 rounded-2xl border bg-muted/20 p-4 text-sm">
+              {checkoutPaymentApplyTarget.stays.map((stay) => {
+                const drafts = unsavedCheckoutPayments(stay);
+                if (drafts.length === 0) return null;
+
+                return (
+                  <div key={stay.id} className="space-y-2">
+                    <div className="flex items-center justify-between gap-3 font-semibold">
+                      <span>Habitación {stay.roomNumber}</span>
+                      <span>{money(paymentTotal(drafts))}</span>
+                    </div>
+                    {drafts.map((payment) => (
+                      <div
+                        key={paymentRecordKey(payment)}
+                        className="flex items-center justify-between gap-3 rounded-xl bg-background px-3 py-2"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate">
+                            {paymentMethodLabel(payment.method)} - {payment.date}
+                          </span>
+                          {payment.reference ? (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {payment.reference}
+                            </span>
+                          ) : null}
+                        </span>
+                        <strong className="shrink-0">{money(Number(payment.amount || 0))}</strong>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+              <div className="flex items-center justify-between border-t pt-3 text-base font-bold">
+                <span>Total a aplicar</span>
+                <span>{money(unsavedCheckoutPaymentsTotal(checkoutPaymentApplyTarget.stays))}</span>
+              </div>
+            </div>
+          ) : null}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              className="rounded-full"
+              disabled={checkoutPaymentApplying}
+            >
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="rounded-full"
+              disabled={checkoutPaymentApplying}
+              onClick={(event) => {
+                event.preventDefault();
+                void confirmApplyCheckoutPayments();
+              }}
+            >
+              {checkoutPaymentApplying ? "Aplicando..." : "Sí, aplicar pagos"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Dialog open={Boolean(invoiceTarget)} onOpenChange={closeStayInvoice}>
         <DialogContent className="!w-[min(1080px,calc(100vw-2rem))] !max-w-none rounded-3xl">
           <DialogHeader>
-            <DialogTitle>Emitir factura FEL</DialogTitle>
+            <DialogTitle>
+              {invoiceTarget?.invoiceKind === "minibar"
+                ? "Emitir factura FEL de snacks/minibar"
+                : "Emitir factura FEL"}
+            </DialogTitle>
             <DialogDescription>
               {invoiceTarget
-                ? `${invoiceTarget.stage === "check-in" ? "Check-in" : "Check-out"} - ${invoiceTarget.stays[0]?.guestName ?? "Cliente"}`
+                ? `${invoiceTarget.invoiceKind === "minibar" ? "Snacks/minibar" : invoiceTarget.stage === "check-in" ? "Check-in" : "Check-out"} - ${invoiceTarget.stays[0]?.guestName ?? "Cliente"}`
                 : "Factura de recepción"}
             </DialogDescription>
           </DialogHeader>
@@ -6434,7 +8228,7 @@ export function RecepcionCheckinPage() {
                   <p className="mt-1 text-lg font-bold">
                     {money(
                       paymentTotal(invoiceTarget.payments) +
-                        minibarChargeTotal(invoiceTarget.minibarCharges),
+                        minibarChargeTotal(activeInvoiceableMinibarCharges),
                     )}
                   </p>
                 </div>
@@ -6459,14 +8253,18 @@ export function RecepcionCheckinPage() {
                   <div className="rounded-2xl border bg-background p-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold">Pagos de la reservación y estadía</p>
+                        <p className="text-sm font-semibold">
+                          {activeInvoiceKind === "minibar"
+                            ? "Factura separada de snacks/minibar"
+                            : "Pagos de la reservación y estadía"}
+                        </p>
                         <p className="text-xs text-muted-foreground">
                           {activeSelectedInvoicePayments.length} de{" "}
                           {activeInvoiceablePayments.length} pendientes seleccionados
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
-                        {activeInvoiceablePayments.length > 0 ? (
+                        {activeInvoiceKind === "stay" && activeInvoiceablePayments.length > 0 ? (
                           <Button
                             type="button"
                             variant="outline"
@@ -6476,12 +8274,15 @@ export function RecepcionCheckinPage() {
                               updateStayInvoiceForm({
                                 selectedPaymentIds:
                                   activeInvoiceablePayments.map(paymentRecordKey),
+                                selectedMinibarChargeIds: [],
                                 amountToInvoice: String(
-                                  roundCurrency(
+                                  invoiceAmountForSelection(
                                     invoiceablePaymentTotal(
                                       activeInvoiceablePayments,
                                       activeInvoiceDispatches,
-                                    ) + activeMinibarInvoiceTotal,
+                                    ),
+                                    0,
+                                    activeInvoiceablePayments.length > 0,
                                   ),
                                 ),
                               })
@@ -6558,8 +8359,15 @@ export function RecepcionCheckinPage() {
                                 ) : null}
                               </span>
                               <div className="flex shrink-0 items-center gap-2">
-                                <span className="font-semibold">
-                                  {money(Number(payment.amount || 0))}
+                                <span className="text-right">
+                                  <span className="block font-semibold">
+                                    {money(Number(payment.amount || 0))}
+                                  </span>
+                                  {paymentInvoiceableAmount(payment, activeInvoiceDispatches) + 0.01 < Number(payment.amount || 0) ? (
+                                    <span className="block text-[11px] text-muted-foreground">
+                                      FEL: {money(paymentInvoiceableAmount(payment, activeInvoiceDispatches))}
+                                    </span>
+                                  ) : null}
                                 </span>
                                 {alreadyInvoiced ? (
                                   <>
@@ -6595,27 +8403,43 @@ export function RecepcionCheckinPage() {
                   {activeInvoiceableMinibarCharges.length > 0 ? (
                     <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-amber-950">
                       <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold">Consumos/minibar incluidos</p>
+                        <div>
+                          <p className="text-sm font-semibold">Consumos/minibar cobrados disponibles para FEL</p>
+                          <p className="text-xs text-amber-900/75">
+                            {activeSelectedMinibarCharges.length} de {activeInvoiceableMinibarCharges.length} consumos seleccionados
+                          </p>
+                        </div>
                         <span className="rounded-full border border-amber-200 bg-white px-2.5 py-1 text-xs font-semibold">
                           {money(activeMinibarInvoiceTotal)}
                         </span>
                       </div>
                       <div className="mt-3 space-y-2">
-                        {activeInvoiceableMinibarCharges.map((charge) => (
-                          <div
-                            key={charge.id}
-                            className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-white/70 p-3 text-sm"
-                          >
-                            <span className="min-w-0 flex-1">
-                              <span className="block font-semibold">{charge.description}</span>
-                              <span className="block truncate text-xs text-amber-900/75">
-                                Código {charge.id}
-                                {charge.roomNumber ? ` - Habitación ${charge.roomNumber}` : ""}
+                        {activeInvoiceableMinibarCharges.map((charge) => {
+                          const selected = activeSelectedMinibarChargeIds.has(charge.id);
+
+                          return (
+                            <div
+                              key={charge.id}
+                              className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-white/70 p-3 text-sm"
+                            >
+                              <Checkbox
+                                checked={selected}
+                                onCheckedChange={(checked) =>
+                                  toggleStayInvoiceMinibarCharge(charge, checked === true)
+                                }
+                                aria-label={`Seleccionar consumo ${charge.description}`}
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block font-semibold">{charge.description}</span>
+                                <span className="block truncate text-xs text-amber-900/75">
+                                  Código {charge.id}
+                                  {charge.roomNumber ? ` - Habitación ${charge.roomNumber}` : ""}
+                                </span>
                               </span>
-                            </span>
-                            <strong>{money(charge.amount)}</strong>
-                          </div>
-                        ))}
+                              <strong>{money(charge.amount)}</strong>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : null}

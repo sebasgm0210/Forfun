@@ -1487,19 +1487,28 @@ function mapInventoryItem(item: unknown): InventoryItem {
   }
 }
 
+// Los movimientos de tipo MinibarConsumption (creados al confirmar un cobro de
+// minibar) no traen room_number como campo propio; el backend solo pone el
+// cuarto dentro del texto de notes (ej. "Consumo minibar habitación 3").
+function extractRoomFromNotes(notes: string): string | undefined {
+  const match = notes.match(/habitaci[oó]n\s+([^\s,.;]+)/i)
+  return match?.[1]
+}
+
 function mapInventoryMovement(item: unknown): InventoryMovement {
   const record = toRecord(item)
   const itemRecord = toRecord(record.inventory_item ?? record.item)
   const itemId = pickId(record, ["id_inventory_item", "inventory_item_id"]) ??
     pickId(itemRecord, ["id_inventory_item", "id"])
+  const notes = pickString(record, ["reason", "notes", "description"], "")
 
   return {
     id: String(pickId(record, ["id_inventory_movement", "idInventoryMovement", "id"]) ?? cryptoId("mov")),
     itemId: itemId ? String(itemId) : "",
     type: mapInventoryMovementType(pickString(record, ["movement_type", "type"], "ajuste")),
     qty: Math.abs(pickNumber(record, ["quantity", "qty"], 0)),
-    reason: pickString(record, ["reason", "notes", "description"], "Movimiento de inventario"),
-    room: pickOptionalString(record, ["room_number", "room"]),
+    reason: notes || "Movimiento de inventario",
+    room: pickOptionalString(record, ["room_number", "room"]) ?? extractRoomFromNotes(notes),
     user: pickString(record, ["registered_by", "user", "created_by"], "Sistema"),
     date: dateOnly(pickString(record, ["created_at", "date", "createdAt"], new Date().toISOString())),
   }

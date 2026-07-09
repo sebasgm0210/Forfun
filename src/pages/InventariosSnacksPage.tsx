@@ -452,6 +452,8 @@ export function InventarioSnacksPage() {
   const [minibarRooms, setMinibarRooms] = useState<MinibarRoomContext[]>([])
   const [selectedRoom, setSelectedRoom] = useState("")
   const [reviewedBy, setReviewedBy] = useState(cleaningStaff[0]?.name ?? "Beatriz López")
+  const [configRoom, setConfigRoom] = useState("")
+  const [configResponsible, setConfigResponsible] = useState(cleaningStaff[0]?.name ?? "")
   const [review, setReview] = useState<ReviewLine[]>([])
   const [roomMiniBars, setRoomMiniBars] = useState<RoomMiniBars>({})
   const [roomExpectedMiniBars, setRoomExpectedMiniBars] = useState<RoomMiniBars>({})
@@ -470,7 +472,7 @@ export function InventarioSnacksPage() {
   const [poSupplier, setPoSupplier] = useState("")
   const [poNotes, setPoNotes] = useState("")
   const [poDraftItemId, setPoDraftItemId] = useState("")
-  const [poDraftQty, setPoDraftQty] = useState(1)
+  const [poDraftQty, setPoDraftQty] = useState("1")
   const [poDraftLines, setPoDraftLines] = useState<PurchaseOrderDraftLine[]>([])
   const [poSaving, setPoSaving] = useState(false)
   const [receivingOrder, setReceivingOrder] = useState<PurchaseOrder | null>(null)
@@ -497,6 +499,10 @@ export function InventarioSnacksPage() {
         ),
     [minibarRooms, rooms],
   )
+  const allRoomOptions = useMemo(
+    () => [...rooms].sort((a, b) => a.number.localeCompare(b.number, "es", { numeric: true })),
+    [rooms],
+  )
   const movements = inventoryMovements.filter((movement) => items.some((item) => item.id === movement.itemId))
   const low = items.filter((item) => item.stock <= item.minStock)
   const selectedStockItem = items.find((item) => item.id === stockItemId) ?? items[0]
@@ -504,6 +510,8 @@ export function InventarioSnacksPage() {
   const selectedReservation = findRoomStay(selectedRoomRecord, reservations)
   const selectedGuest = selectedReservation ? guests.find((guest) => guest.id === selectedReservation.guestId) : undefined
   const selectedRoomContext = minibarRooms.find((room) => room.roomNumber === selectedRoom)
+  const configRoomRecord = rooms.find((room) => room.number === configRoom)
+  const configRoomContext = minibarRooms.find((room) => room.roomNumber === configRoom)
   const guestName =
     selectedRoomContext?.guestName ??
     selectedGuest?.name ??
@@ -549,6 +557,12 @@ export function InventarioSnacksPage() {
   const selectedRoomMiniBar = items.map((item) => {
     const expected = getExpectedRoomQty(selectedRoom, item)
     const current = getRoomQty(selectedRoom, item)
+    return { item, expected, current, missing: Math.max(0, expected - current) }
+  })
+
+  const configRoomMiniBar = items.map((item) => {
+    const expected = getExpectedRoomQty(configRoom, item)
+    const current = getRoomQty(configRoom, item)
     return { item, expected, current, missing: Math.max(0, expected - current) }
   })
 
@@ -863,19 +877,24 @@ export function InventarioSnacksPage() {
     }))
   }
 
-  const configureSelectedRoomMinibar = async () => {
-    if (!selectedRoom) {
+  const configureRoomInventory = async () => {
+    if (!configRoom) {
       toast.error("Elige una habitación")
       return
     }
 
-    const roomId = Number(selectedRoomContext?.roomId ?? selectedRoomRecord?.id)
+    if (!configResponsible.trim()) {
+      toast.error("Elige la persona encargada")
+      return
+    }
+
+    const roomId = Number(configRoomContext?.roomId ?? configRoomRecord?.id)
     if (!Number.isFinite(roomId)) {
       toast.error("La habitación no tiene identificador del servidor")
       return
     }
 
-    const payloadItems = selectedRoomMiniBar
+    const payloadItems = configRoomMiniBar
       .map(({ item, expected }) => ({
         id_inventory_item: Number(item.id),
         expected_quantity: expected,
@@ -889,10 +908,12 @@ export function InventarioSnacksPage() {
 
     try {
       await api.inventory.configureRoomMinibar(roomId, { items: payloadItems })
-      setConfiguredMiniBars((current) => ({ ...current, [selectedRoom]: true }))
-      showCardFeedback(`config-${selectedRoom}`, "Configuración guardada")
+      setConfiguredMiniBars((current) => ({ ...current, [configRoom]: true }))
+      showCardFeedback(`config-${configRoom}`, "Configuración guardada")
       await Promise.all([loadMinibarData(), refreshApiState(["inventory"], { force: true })])
-      toast.success(`Minibar configurado para habitación ${selectedRoom}`)
+      toast.success(`Minibar configurado para habitación ${configRoom}`, {
+        description: `Encargado: ${configResponsible}`,
+      })
     } catch (error) {
       toast.error("No se pudo configurar el minibar", {
         description: getApiErrorMessage(error),
@@ -954,7 +975,12 @@ export function InventarioSnacksPage() {
     if (!charge) return
 
     try {
-      await api.minibar.chargePendingCharge(chargeId)
+      await api.minibar.chargePendingCharge(chargeId, {
+        payment_method: "efectivo",
+        payment_reference: `Consumo minibar hab. ${charge.room}`,
+        responsible: "Recepción",
+        notes: "Cargo de snacks/minibar a la cuenta de la habitación",
+      })
       showCardFeedback(`charge-${chargeId}`, "Consumo cargado con exito")
       await Promise.all([
         loadMinibarData(),
@@ -1084,7 +1110,8 @@ export function InventarioSnacksPage() {
 
   const addPurchaseOrderDraftLine = () => {
     const item = items.find((candidate) => candidate.id === poDraftItemId)
-    if (!item || poDraftQty <= 0) {
+    const qty = Number(poDraftQty)
+    if (!item || !Number.isFinite(qty) || qty <= 0) {
       toast.error("Elige producto y cantidad")
       return
     }
@@ -1094,10 +1121,10 @@ export function InventarioSnacksPage() {
     }
     setPoDraftLines((current) => [
       ...current,
-      { itemId: item.id, qty: Math.max(1, Math.floor(poDraftQty)), unitCost: item.cost },
+      { itemId: item.id, qty: Math.max(1, Math.floor(qty)), unitCost: item.cost },
     ])
     setPoDraftItemId("")
-    setPoDraftQty(1)
+    setPoDraftQty("1")
   }
 
   const removePurchaseOrderDraftLine = (itemId: string) => {
@@ -1316,6 +1343,7 @@ export function InventarioSnacksPage() {
         <TabsList className="flex h-auto flex-wrap justify-start rounded-2xl bg-muted/60 p-1">
           <TabsTrigger value="recepcion">Recepcion</TabsTrigger>
           <TabsTrigger value="revisar">Revisar cuarto</TabsTrigger>
+          <TabsTrigger value="inventario-cuarto">Inventario de cuarto</TabsTrigger>
           <TabsTrigger value="reposicion">Reposicion minibar</TabsTrigger>
           <TabsTrigger value="productos">Productos</TabsTrigger>
           <TabsTrigger value="compras">Compras</TabsTrigger>
@@ -1418,55 +1446,6 @@ export function InventarioSnacksPage() {
 
             <aside className="space-y-4">
               <div className="relative">
-                <CardActionFeedback message={cardFeedback[`config-${selectedRoom}`]} />
-                <SectionCard
-                  title="Inventario de este cuarto"
-                  description="Define una sola lista base de productos por habitación; no crees productos duplicados por cuarto."
-                  actions={
-                    <Button size="sm" variant="outline" className="gap-2 rounded-full" onClick={configureSelectedRoomMinibar} disabled={!selectedRoom || items.length === 0}>
-                      <Save className="size-4" />
-                      Guardar configuración
-                    </Button>
-                  }
-                >
-                <div className="space-y-2">
-                  {selectedRoomMiniBar.map(({ item, expected, current }) => (
-                    <div key={item.id} className="grid gap-2 rounded-2xl border bg-background/60 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                      <div className="min-w-0">
-                        <p className="truncate font-medium">{item.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          Actual: {current} · Base configurada: {expected}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="size-8 rounded-full p-0"
-                          onClick={() => setExpectedQty(selectedRoom, item, expected - 1)}
-                          disabled={expected <= 0}
-                        >
-                          <Minus className="size-3.5" />
-                        </Button>
-                        <span className={cn("grid min-w-10 place-items-center rounded-full px-2.5 py-1 text-xs font-semibold", current < expected ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800")}>
-                          {expected}
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="size-8 rounded-full p-0"
-                          onClick={() => setExpectedQty(selectedRoom, item, expected + 1)}
-                        >
-                          <Plus className="size-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                </SectionCard>
-              </div>
-
-              <div className="relative">
                 <CardActionFeedback message={cardFeedback["review-summary"]} />
                 <SectionCard title="3. Aviso para recepcion" description="Revisa antes de enviar. Si no hubo consumo, no se carga nada.">
                   <div className="space-y-3">
@@ -1546,6 +1525,95 @@ export function InventarioSnacksPage() {
                 />
               </SectionCard>
             </aside>
+          </section>
+        </TabsContent>
+
+        <TabsContent value="inventario-cuarto" className="space-y-4">
+          <section className="grid gap-4 2xl:grid-cols-[380px_1fr]">
+            <SectionCard title="1. Elige habitación y encargado" description="Define la lista base de snacks/minibar de cualquier habitación, esté ocupada o no.">
+              <div className="grid gap-3">
+                <label className="space-y-2 text-sm font-medium">
+                  Habitación
+                  <select
+                    value={configRoom}
+                    onChange={(event) => setConfigRoom(event.target.value)}
+                    className="h-10 w-full rounded-full border bg-background px-3 text-sm"
+                  >
+                    <option value="">Elige una habitación</option>
+                    {allRoomOptions.map((room) => (
+                      <option key={room.id} value={room.number}>Habitación {room.number}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm font-medium">
+                  Persona encargada
+                  <select
+                    value={configResponsible}
+                    onChange={(event) => setConfigResponsible(event.target.value)}
+                    className="h-10 w-full rounded-full border bg-background px-3 text-sm"
+                  >
+                    <option value="">Elige a la persona encargada</option>
+                    {cleaningStaff.map((person) => (
+                      <option key={person.name} value={person.name}>{person.name} · {person.role}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </SectionCard>
+
+            <div className="relative">
+              <CardActionFeedback message={cardFeedback[`config-${configRoom}`]} />
+              <SectionCard
+                title="2. Inventario de este cuarto"
+                description="Define una sola lista base de productos por habitación; no crees productos duplicados por cuarto."
+                actions={
+                  <Button size="sm" variant="outline" className="gap-2 rounded-full" onClick={configureRoomInventory} disabled={!configRoom || !configResponsible || items.length === 0}>
+                    <Save className="size-4" />
+                    Guardar configuración
+                  </Button>
+                }
+              >
+                <div className="space-y-2">
+                  {configRoomMiniBar.map(({ item, expected, current }) => (
+                    <div key={item.id} className="grid gap-2 rounded-2xl border bg-background/60 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{item.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Actual: {current} · Base configurada: {expected}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="size-8 rounded-full p-0"
+                          onClick={() => setExpectedQty(configRoom, item, expected - 1)}
+                          disabled={expected <= 0}
+                        >
+                          <Minus className="size-3.5" />
+                        </Button>
+                        <span className={cn("grid min-w-10 place-items-center rounded-full px-2.5 py-1 text-xs font-semibold", current < expected ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800")}>
+                          {expected}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="size-8 rounded-full p-0"
+                          onClick={() => setExpectedQty(configRoom, item, expected + 1)}
+                        >
+                          <Plus className="size-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                  {!configRoom ? (
+                    <p className="rounded-2xl border border-dashed bg-muted/20 p-4 text-center text-sm text-muted-foreground">
+                      Elige una habitación para ver y configurar su inventario base.
+                    </p>
+                  ) : null}
+                </div>
+              </SectionCard>
+            </div>
           </section>
         </TabsContent>
 
@@ -1907,7 +1975,8 @@ export function InventarioSnacksPage() {
                       type="number"
                       min={1}
                       value={poDraftQty}
-                      onChange={(event) => setPoDraftQty(Number(event.target.value) || 1)}
+                      onChange={(event) => setPoDraftQty(event.target.value)}
+                      onBlur={() => setPoDraftQty((current) => (Number(current) > 0 ? String(Math.floor(Number(current))) : "1"))}
                       className="rounded-full"
                     />
                   </label>

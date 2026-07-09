@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { CheckCircle2, CreditCard, Plus, Printer, Trash2 } from "lucide-react"
+import { CheckCircle2, CreditCard, Plus, Printer, Receipt, Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -104,6 +104,13 @@ type PaymentBreakdownCardProps = {
   autoApplyHint?: string | null
   headerLayout?: "stacked" | "inline"
   className?: string
+  /** Se llama antes de agregar un pago nuevo. Si devuelve false, no se agrega
+   * (el llamador puede mostrar su propio flujo, ej. elegir entre pagar saldo
+   * de habitación o snacks/minibar, y agregar el pago manualmente después). */
+  onBeforeAddPayment?: () => boolean
+  /** Muestra un botón "Facturar" por fila para pagos guardados y no facturados. */
+  onInvoicePayment?: (payment: PaymentRecord) => void
+  invoicePaymentLabel?: string
 }
 
 export function PaymentBreakdownCard({
@@ -131,6 +138,9 @@ export function PaymentBreakdownCard({
   autoApplyHint = "El monto queda aplicado automáticamente al escribirlo.",
   headerLayout = "stacked",
   className,
+  onBeforeAddPayment,
+  onInvoicePayment,
+  invoicePaymentLabel = "Facturar",
 }: PaymentBreakdownCardProps) {
   const [draftPayments, setDraftPayments] = useState<PaymentRecord[]>(payments)
   const editablePayments = requireApply ? draftPayments : payments
@@ -282,6 +292,7 @@ export function PaymentBreakdownCard({
 
   function addPayment() {
     if (balance <= 0) return
+    if (onBeforeAddPayment && !onBeforeAddPayment()) return
     if (requireApply) {
       setDraftPayments((current) => [...current, createPaymentRecord(stage)])
       return
@@ -606,6 +617,18 @@ export function PaymentBreakdownCard({
                   >
                     <CheckCircle2 className="size-3.5" />
                     {isApplied ? "Abono aplicado" : applyLabel}
+                  </Button>
+                ) : null}
+                {onInvoicePayment && !paymentIsLocalDraft && !isPaymentInvoiced && paymentAmount > 0 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 rounded-full border-blue-200 text-blue-800 hover:bg-blue-50"
+                    onClick={() => onInvoicePayment(payment)}
+                  >
+                    <Receipt className="size-3.5" />
+                    {invoicePaymentLabel}
                   </Button>
                 ) : null}
                 {onPrintPayment ? (
