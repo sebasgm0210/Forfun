@@ -252,7 +252,7 @@ function mapLinenItem(value: unknown): LinenItem | null {
 function assignmentRecords(value: unknown) {
   return apiArray(value).flatMap((entry) => {
     const room = apiRecord(entry)
-    const nested = apiArray(room.assignments)
+    const nested = apiArray(room.items ?? room.assignments)
     if (nested.length === 0) return [room]
     return nested.map((assignment) => ({
       ...room,
@@ -715,7 +715,11 @@ function Modal({
 }
 
 export function InventarioBlancosPage() {
-  const { rooms, refreshApiState } = useStore()
+  const { rooms: rawRooms, refreshApiState } = useStore()
+  const rooms = useMemo(
+    () => [...rawRooms].sort((a, b) => a.number.localeCompare(b.number, "es", { numeric: true })),
+    [rawRooms],
+  )
   const [items, setItems] = useState<LinenItem[]>([])
   const [assignments, setAssignments] = useState<RoomAssignment[]>([])
   const [laundry, setLaundry] = useState<LaundryBatch[]>([])
@@ -1502,6 +1506,7 @@ export function InventarioBlancosPage() {
       <Tabs defaultValue="inventario" className="space-y-4">
         <TabsList className="flex h-auto flex-wrap justify-start rounded-2xl bg-muted/60 p-1">
           <TabsTrigger value="inventario">Inventario</TabsTrigger>
+          <TabsTrigger value="resumen">Resumen por habitación</TabsTrigger>
           <TabsTrigger value="habitaciones">Habitaciones</TabsTrigger>
           <TabsTrigger value="lavanderia">Lavandería</TabsTrigger>
           <TabsTrigger value="danos">Daños</TabsTrigger>
@@ -1595,6 +1600,62 @@ export function InventarioBlancosPage() {
                 </tbody>
               </table>
             </div>
+          </Panel>
+        </TabsContent>
+
+        <TabsContent value="resumen" className="space-y-4">
+          <Panel
+            title="Resumen por habitación"
+            description="Vista rápida de qué artículo y cuánta cantidad tiene asignada cada habitación."
+            action={
+              <Button size="sm" className="gap-2 rounded-full" onClick={() => setModal("assign")}>
+                <BedDouble className="size-4" />
+                Asignar artículo
+              </Button>
+            }
+          >
+            {assignments.length === 0 ? (
+              <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                No hay artículos asignados a habitaciones.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+                      <th className="py-3 pr-4">Habitación</th>
+                      <th className="py-3 pr-4">Artículo</th>
+                      <th className="py-3 pr-4">Cantidad</th>
+                      <th className="py-3 pr-4">Responsable</th>
+                      <th className="py-3 pr-4">Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...assignments]
+                      .sort((a, b) => a.room.localeCompare(b.room, "es", { numeric: true }))
+                      .map((assignment) => (
+                        <tr key={assignment.id} className="border-b last:border-0">
+                          <td className="py-3 pr-4 font-semibold">Habitación {assignment.room}</td>
+                          <td className="py-3 pr-4">{assignment.itemName}</td>
+                          <td className="py-3 pr-4">{assignment.qty}</td>
+                          <td className="py-3 pr-4 text-muted-foreground">{assignment.responsible}</td>
+                          <td className="py-3 pr-4">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="gap-2 rounded-full"
+                              onClick={() => openLaundryModalFromAssignment(assignment)}
+                            >
+                              <Trash2 className="size-3.5" />
+                              Quitar (enviar a lavandería)
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Panel>
         </TabsContent>
 
@@ -2019,7 +2080,7 @@ export function InventarioBlancosPage() {
               </SelectInput>
             </Field>
             <Field label="Retorno estimado">
-              <TextInput value={laundryForm.expectedReturn} onChange={(event) => setLaundryForm((current) => ({ ...current, expectedReturn: event.target.value }))} placeholder="Ej. Hoy 5:00 PM" />
+              <TextInput type="datetime-local" value={laundryForm.expectedReturn} onChange={(event) => setLaundryForm((current) => ({ ...current, expectedReturn: event.target.value }))} />
             </Field>
             <Field label="Responsable">
               <TextInput value={laundryForm.responsible} onChange={(event) => setLaundryForm((current) => ({ ...current, responsible: event.target.value }))} />
@@ -2054,7 +2115,7 @@ export function InventarioBlancosPage() {
               </SelectInput>
             </Field>
             <Field label="Retorno estimado">
-              <TextInput value={bulkLaundryForm.expectedReturn} onChange={(event) => setBulkLaundryForm((current) => ({ ...current, expectedReturn: event.target.value }))} placeholder="Ej. Hoy 5:00 PM" />
+              <TextInput type="datetime-local" value={bulkLaundryForm.expectedReturn} onChange={(event) => setBulkLaundryForm((current) => ({ ...current, expectedReturn: event.target.value }))} />
             </Field>
             <Field label="Responsable">
               <TextInput value={bulkLaundryForm.responsible} onChange={(event) => setBulkLaundryForm((current) => ({ ...current, responsible: event.target.value }))} />

@@ -7355,12 +7355,17 @@ export function RecepcionReservacionesPage() {
                     onConfirm={() =>
                       updateReservationStatus(reservation.id, "Reservada")
                     }
-                    onSendToCheckIn={() =>
+                    onSendToCheckIn={() => {
+                      const confirmed = window.confirm(
+                        `¿Estás seguro de que quieres enviar a check-in la reserva ${reservation.code}?`,
+                      );
+                      if (!confirmed) return;
+
                       updateReservationStatus(
                         reservation.id,
                         "Lista para check-in",
-                      )
-                    }
+                      );
+                    }}
                     onCancel={() => setReservationToCancel(reservation)}
                     onPrint={() => printReservation(reservation)}
                     onPrintReceipt={() => printReservationReceipt(reservation)}

@@ -18,6 +18,13 @@ export interface PaymentItemModel {
   notes?: string | null
 }
 
+export interface ChargeMinibarPendingChargeModel {
+  payment_method?: string | null
+  payment_reference?: string | null
+  responsible?: string | null
+  notes?: string | null
+}
+
 export interface MenuPermissionModel {
   id_menu?: number
   can_view?: boolean
@@ -1506,10 +1513,17 @@ export const api = {
       apiRequest<T>(`/api/minibar/pending-charges/${segment(id)}`, {
         method: "DELETE",
       }),
-    chargePendingCharge: <T = unknown>(id: ApiId) =>
-      apiRequest<T>(`/api/minibar/pending-charges/${segment(id)}/charge`, {
-        method: "POST",
-      }),
+    chargePendingCharge: <T = unknown>(
+      id: ApiId,
+      body?: ChargeMinibarPendingChargeModel,
+    ) =>
+      apiRequest<T, ChargeMinibarPendingChargeModel>(
+        `/api/minibar/pending-charges/${segment(id)}/charge`,
+        {
+          method: "POST",
+          body,
+        },
+      ),
   },
 
   rates: {
